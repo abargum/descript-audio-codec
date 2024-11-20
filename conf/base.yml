@@ -1,13 +1,13 @@
 # Model setup
 DAC.sample_rate: 44100
-DAC.encoder_dim: 64
+DAC.encoder_dim: 16
 DAC.encoder_rates: [2, 4, 8, 8]
-DAC.decoder_dim: 1536
+DAC.decoder_dim: 384
 DAC.decoder_rates: [8, 8, 4, 2]
 
 # Quantization
 DAC.n_codebooks: 9
-DAC.codebook_size: 1024
+DAC.codebook_size: 256
 DAC.codebook_dim: 8
 DAC.quantizer_dropout: 1.0
 
@@ -32,8 +32,8 @@ amp: false
 val_batch_size: 100
 device: cuda
 num_iters: 250000
-save_iters: [10000, 50000, 100000, 200000]
-valid_freq: 1000
+save_iters: [10000, 50000, 100000, 200000, 300000, 40000, 500000, 600000, 700000, 800000, 900000]
+valid_freq: 10000
 sample_freq: 10000
 num_workers: 32
 val_idx: [0, 1, 2, 3, 4, 5, 6, 7]
@@ -42,8 +42,7 @@ lambdas:
   mel/loss: 15.0
   adv/feat_loss: 2.0
   adv/gen_loss: 1.0
-  vq/commitment_loss: 0.25
-  vq/codebook_loss: 1.0
+  ce/unit_loss: 1.0
 
 VolumeNorm.db: [const, -16]
 
@@ -69,7 +68,7 @@ MelSpectrogramLoss.clamp_eps: 1.0e-5
 MelSpectrogramLoss.mag_weight: 0.0
 
 # Data
-batch_size: 72
+batch_size: 2
 train/AudioDataset.duration: 0.38
 train/AudioDataset.n_examples: 10000000
 
@@ -85,39 +84,13 @@ AudioLoader.shuffle: true
 AudioDataset.without_replacement: true
 
 train/build_dataset.folders:
-  speech_fb:
-    - /data/daps/train
-  speech_hq:
-    - /data/vctk
-    - /data/vocalset
-    - /data/read_speech
-    - /data/french_speech
-  speech_uq:
-    - /data/emotional_speech/
-    - /data/common_voice/
-    - /data/german_speech/
-    - /data/russian_speech/
-    - /data/spanish_speech/
   music_hq:
-    - /data/musdb/train
-  music_uq:
-    - /data/jamendo
-  general:
-    - /data/audioset/data/unbalanced_train_segments/
-    - /data/audioset/data/balanced_train_segments/
+    - ../musical_instrument_embedding/nsynth-train
 
 val/build_dataset.folders:
-  speech_hq:
-    - /data/daps/val
   music_hq:
-    - /data/musdb/test
-  general:
-    - /data/audioset/data/eval_segments/
+    - ../musical_instrument_embedding/nsynth-valid
 
 test/build_dataset.folders:
-  speech_hq:
-    - /data/daps/test
   music_hq:
-    - /data/musdb/test
-  general:
-    - /data/audioset/data/eval_segments/
+   - ../musical_instrument_embedding/nsynth-test

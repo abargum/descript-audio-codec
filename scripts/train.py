@@ -19,6 +19,8 @@ from audiotools.ml.decorators import when
 from torch.utils.tensorboard import SummaryWriter
 
 import dac
+from rave.rave_model import RAVE
+import wandb
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -92,7 +94,9 @@ def build_dataset(
     for _, v in folders.items():
         loader = AudioLoader(sources=v)
         transform = build_transform()
-        dataset = AudioDataset(loader, sample_rate, transform=transform)
+        dataset = AudioDataset(loader, sample_rate, duration=0.3715193, transform=transform)
+        #dataset = AudioDataset(loader, sample_rate, duration=2.972155, transform=transform)
+
         datasets.append(dataset)
 
     dataset = ConcatDataset(datasets)
@@ -146,7 +150,9 @@ def load(
         if (Path(kwargs["folder"]) / "discriminator").exists():
             discriminator, d_extra = Discriminator.load_from_folder(**kwargs)
 
-    generator = DAC() if generator is None else generator
+    generator = RAVE() if generator is None else generator
+    
+    
     discriminator = Discriminator() if discriminator is None else discriminator
 
     tracker.print(generator)
@@ -221,6 +227,21 @@ def val_loop(batch, state, accel):
         "waveform/loss": state.waveform_loss(recons, signal),
     }
 
+@torch.no_grad()
+def get_audio(batch, state, accel):
+    state.generator.eval()
+    batch = util.prepare_batch(batch, accel.device)
+    signal = state.val_data.transform(
+        batch["signal"].clone(), **batch["transform_args"]
+    )
+
+    out = state.generator(signal.audio_data, signal.sample_rate)
+    recons = AudioSignal(out["audio"], signal.sample_rate)
+
+    inp = AudioSignal(signal.audio_data, signal.sample_rate)
+
+    return inp, recons, signal.sample_rate
+
 
 @timer()
 def train_loop(state, batch, accel, lambdas):
@@ -237,8 +258,7 @@ def train_loop(state, batch, accel, lambdas):
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
-        commitment_loss = out["vq/commitment_loss"]
-        codebook_loss = out["vq/codebook_loss"]
+        unit_loss = out["ce/unit_loss"]
 
     with accel.autocast():
         output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
@@ -260,8 +280,9 @@ def train_loop(state, batch, accel, lambdas):
             output["adv/gen_loss"],
             output["adv/feat_loss"],
         ) = state.gan_loss.generator_loss(recons, signal)
-        output["vq/commitment_loss"] = commitment_loss
-        output["vq/codebook_loss"] = codebook_loss
+        
+        output["ce/unit_loss"] = unit_loss
+                
         output["loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
 
     state.optimizer_g.zero_grad()
@@ -273,6 +294,15 @@ def train_loop(state, batch, accel, lambdas):
     accel.step(state.optimizer_g)
     state.scheduler_g.step()
     accel.update()
+
+    wandb.log({"stft": output["stft/loss"],
+               "mel": output["mel/loss"],
+               "waveform": output["waveform/loss"],
+               "generator": output["adv/gen_loss"],
+               "feature": output["adv/feat_loss"],
+               "discriminator": output["adv/disc_loss"],
+               "unit": output["ce/unit_loss"],
+               "total": output["loss"]})
 
     output["other/learning_rate"] = state.optimizer_g.param_groups[0]["lr"]
     output["other/batch_size"] = signal.batch_size * accel.world_size
@@ -300,7 +330,7 @@ def checkpoint(state, save_iters, save_path):
         }
         accel.unwrap(state.generator).metadata = metadata
         accel.unwrap(state.generator).save_to_folder(
-            f"{save_path}/{tag}", generator_extra
+            f"{save_path}/{tag}", generator_extra, package=False
         )
         discriminator_extra = {
             "optimizer.pth": state.optimizer_d.state_dict(),
@@ -336,10 +366,25 @@ def save_samples(state, val_idx, writer):
                 f"{k}/sample_{nb}.wav", writer, state.tracker.step
             )
 
-
 def validate(state, val_dataloader, accel):
     for batch in val_dataloader:
         output = val_loop(batch, state, accel)
+        last_batch = batch
+
+    inp, recon, sr = get_audio(last_batch, state, accel)
+    inp = inp.audio_data.float()
+    recon = recon.audio_data.float()
+
+    audio = torch.cat([inp, recon], -1)
+    audio = list(map(lambda x: x.cpu(), audio))
+    audio_to_export = torch.cat(audio, 0)[:8].reshape(-1).numpy()
+
+    wandb.log({f"audio_val_{state.tracker.step}": 
+               wandb.Audio(audio_to_export,
+                           caption="audio",
+                           sample_rate=sr)
+            })
+    
     # Consolidate state dicts if using ZeroRedundancyOptimizer
     if hasattr(state.optimizer_g, "consolidate_state_dict"):
         state.optimizer_g.consolidate_state_dict()
@@ -354,9 +399,9 @@ def train(
     seed: int = 0,
     save_path: str = "ckpt",
     num_iters: int = 250000,
-    save_iters: list = [10000, 50000, 100000, 200000],
+    save_iters: list = [10000, 50000, 100000],
     sample_freq: int = 10000,
-    valid_freq: int = 1000,
+    valid_freq: int = 10000,
     batch_size: int = 12,
     val_batch_size: int = 10,
     num_workers: int = 8,
@@ -365,8 +410,7 @@ def train(
         "mel/loss": 100.0,
         "adv/feat_loss": 2.0,
         "adv/gen_loss": 1.0,
-        "vq/commitment_loss": 0.25,
-        "vq/codebook_loss": 1.0,
+        "ce/unit_loss": 1.0,
     },
 ):
     util.seed(seed)
@@ -406,6 +450,7 @@ def train(
     validate = tracker.log("val", "mean")(validate)
 
     # These functions run only on the 0-rank process
+    
     save_samples = when(lambda: accel.local_rank == 0)(save_samples)
     checkpoint = when(lambda: accel.local_rank == 0)(checkpoint)
 
@@ -430,6 +475,9 @@ def train(
 
 
 if __name__ == "__main__":
+
+    wandb.init(project="vc-descript", name="test")
+    
     args = argbind.parse_args()
     args["args.debug"] = int(os.getenv("LOCAL_RANK", 0)) == 0
     with argbind.scope(args):
