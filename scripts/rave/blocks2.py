@@ -60,7 +60,7 @@ class ResidualLayer(nn.Module):
         net = []
         cd = 0
         for d in dilations:
-            net.append(Snake(dim))
+            net.append(activation(dim))
             net.append(
                 normalization(
                     cc.Conv1d(
@@ -93,7 +93,7 @@ class DilatedUnit(nn.Module):
     ) -> None:
         super().__init__()
         net = [
-            Snake(dim),
+            activation(dim),
             normalization(
                 cc.Conv1d(dim,
                           dim,
@@ -103,7 +103,7 @@ class DilatedUnit(nn.Module):
                               kernel_size,
                               dilation=dilation, mode='causal'
                           ))),
-            Snake(dim),
+            activation(dim),
             normalization(cc.Conv1d(dim, dim, kernel_size=1)),
         ]
 
@@ -155,7 +155,7 @@ class UpsampleLayer(nn.Module):
         cumulative_delay=0,
         activation: Callable[[int], nn.Module] = lambda dim: nn.LeakyReLU(.2)):
         super().__init__()
-        net = [Snake(in_dim)]
+        net = [activation(in_dim)]
         if ratio > 1:
             net.append(
                 normalization(
@@ -233,7 +233,7 @@ class EncoderV2(nn.Module):
                         )))
 
             # ADD DOWNSAMPLING UNIT
-            net.append(Snake(num_channels))
+            net.append(activation(num_channels))
 
             if keep_dim:
                 out_channels = num_channels * r
@@ -251,7 +251,7 @@ class EncoderV2(nn.Module):
 
             num_channels = out_channels
 
-        net.append(Snake(num_channels))
+        net.append(activation(num_channels))
         net.append(
             normalization(
                 cc.Conv1d(
@@ -288,6 +288,132 @@ class Snake(nn.Module):
 
 def leaky_relu(dim: int, alpha: float):
     return nn.LeakyReLU(alpha)
+
+
+class SpeakerRAVE(nn.Module):
+
+    def __init__(self, activation = lambda dim: nn.LeakyReLU(.2)):
+        super().__init__()
+
+        kernel_size = 3
+
+        self.in_layer = normalization(
+                cc.Conv1d(
+                    16,
+                    128,
+                    kernel_size=kernel_size * 2 + 1,
+                    padding=cc.get_padding(kernel_size * 2 + 1),
+                ))
+
+        r = 4
+        num_channels = 128
+        out_channels = 256
+        d = 1
+
+        self.layer2 = torch.nn.Sequential(Residual(
+            DilatedUnit(dim=num_channels,
+                        kernel_size=kernel_size,
+                        dilation=d)),
+            activation(num_channels),
+            normalization(cc.Conv1d(num_channels,
+                                    out_channels,
+                                    kernel_size=2*r,
+                                    stride=r,
+                                    padding=cc.get_padding(2*r, r))))
+
+        r = 4
+        num_channels = 256
+        out_channels = 256
+        d = 3
+        
+        self.layer3 = torch.nn.Sequential(Residual(
+            DilatedUnit(dim=num_channels,
+                        kernel_size=kernel_size,
+                        dilation=d)),
+            activation(num_channels),
+            normalization(cc.Conv1d(num_channels,
+                                    out_channels,
+                                    kernel_size=2*r,
+                                    stride=r,
+                                    padding=cc.get_padding(2*r, r))))
+
+        r = 2
+        num_channels = 256
+        out_channels = 256
+        d = 5
+        
+        self.layer4 = torch.nn.Sequential(Residual(
+            DilatedUnit(dim=num_channels,
+                        kernel_size=kernel_size,
+                        dilation=d)),
+            activation(num_channels),
+            normalization(cc.Conv1d(num_channels,
+                                    out_channels,
+                                    kernel_size=2*r,
+                                    stride=r,
+                                    padding=cc.get_padding(2*r, r))))
+    
+        self.cat_layer = normalization(cc.Conv1d(out_channels,
+                                                 out_channels,
+                                                 kernel_size=1,
+                                                 padding=cc.get_padding(1)))
+
+        self.out_layer = normalization(cc.Conv1d(out_channels * 3,
+                                                 768,
+                                                 kernel_size=kernel_size,
+                                                 padding=cc.get_padding(kernel_size)))
+
+        self.activation = activation(768)
+
+        attention_projection = 768
+        attn_input = attention_projection * 3
+        attn_output = attention_projection
+
+        self.attention = nn.Sequential(
+            nn.Conv1d(attn_input, 128, kernel_size=1),
+            nn.ReLU(),
+            nn.BatchNorm1d(128),
+            cc.Conv1d(128, attn_output, kernel_size=1),
+            nn.Softmax(dim=2),
+        )
+
+        self.bn5 = nn.BatchNorm1d(attention_projection*2)
+
+        self.fc6 = nn.Linear(attention_projection*2, 256)
+        self.bn6 = nn.BatchNorm1d(256)
+
+        self.mp2 = torch.nn.MaxPool1d(2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        x = self.in_layer(x)
+        x1 = self.layer2(x)
+        x2 = self.layer3(x1)
+        x3 = self.layer4(x2)
+        x4 = self.cat_layer(self.mp2(x2) + x3)
+
+        x = torch.cat((self.mp2(x2), x3, x4), dim=1)
+        
+        x = self.out_layer(x)
+        x = self.activation(x)
+
+        t = x.size()[-1]
+
+        global_x = torch.cat((x,
+                              torch.mean(x, dim=2, keepdim=True).repeat(1, 1, t),
+                              torch.sqrt(torch.var(x, dim=2, keepdim=True).clamp(min=1e-4, max=1e4)).repeat(1, 1, t)),
+                              dim=1)
+
+        w = self.attention(global_x)
+
+        mu = torch.sum(x * w, dim=2)
+        sg = torch.sqrt((torch.sum((x**2) * w, dim=2) - mu**2).clamp(min=1e-4, max=1e4))
+
+        x = torch.cat((mu, sg), 1)
+        x = self.bn5(x)
+        x = self.fc6(x)
+
+        return x    
 
 
 class SineGen(torch.nn.Module):
@@ -508,7 +634,7 @@ class GeneratorV2Sine(nn.Module):
                 out_channels = num_channels // r
             else:
                 out_channels = num_channels // 2
-            net.append(Snake(num_channels))
+            net.append(activation(num_channels))
             net.append(
                 normalization(
                     cc.ConvTranspose1d(num_channels,
@@ -533,7 +659,7 @@ class GeneratorV2Sine(nn.Module):
                             dilation=d,
                         )))
 
-        net.append(Snake(num_channels))
+        net.append(activation(num_channels))
 
         waveform_module = normalization(
             cc.Conv1d(

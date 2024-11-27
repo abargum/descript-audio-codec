@@ -40,7 +40,8 @@ def ExponentialLR(optimizer, gamma: float = 1.0):
 
 
 # Models
-DAC = argbind.bind(dac.model.DAC)
+RAVE = argbind.bind(RAVE)
+
 Discriminator = argbind.bind(dac.model.Discriminator)
 
 # Data
@@ -84,6 +85,7 @@ def build_transform(
 @argbind.bind("train", "val", "test")
 def build_dataset(
     sample_rate: int,
+    duration: float = None,
     folders: dict = None,
 ):
     # Give one loader per key/value of dictionary, where
@@ -94,9 +96,7 @@ def build_dataset(
     for _, v in folders.items():
         loader = AudioLoader(sources=v)
         transform = build_transform()
-        dataset = AudioDataset(loader, sample_rate, duration=0.3715193, transform=transform)
-        #dataset = AudioDataset(loader, sample_rate, duration=2.972155, transform=transform)
-
+        dataset = AudioDataset(loader, sample_rate, duration=duration, transform=transform)
         datasets.append(dataset)
 
     dataset = ConcatDataset(datasets)
@@ -106,7 +106,11 @@ def build_dataset(
 
 @dataclass
 class State:
-    generator: DAC
+    generator: RAVE
+
+    optimizer_e: AdamW
+    scheduler_e: ExponentialLR
+    
     optimizer_g: AdamW
     scheduler_g: ExponentialLR
 
@@ -145,14 +149,12 @@ def load(
             "package": not load_weights,
         }
         tracker.print(f"Resuming from {str(Path('.').absolute())}/{kwargs['folder']}")
-        if (Path(kwargs["folder"]) / "dac").exists():
-            generator, g_extra = DAC.load_from_folder(**kwargs)
+        if (Path(kwargs["folder"]) / "rave").exists():
+            generator, g_extra = RAVE.load_from_folder(**kwargs)
         if (Path(kwargs["folder"]) / "discriminator").exists():
             discriminator, d_extra = Discriminator.load_from_folder(**kwargs)
 
     generator = RAVE() if generator is None else generator
-    
-    
     discriminator = Discriminator() if discriminator is None else discriminator
 
     tracker.print(generator)
@@ -162,8 +164,14 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        optimizer_g = AdamW(generator.parameters(), use_zero=accel.use_ddp)
+        optimizer_g = AdamW(generator.decoder.parameters(), use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
+
+        encoder_param = list(generator.encoder.parameters())
+        encoder_param += list(generator.ce_projection.parameters())
+        optimizer_e = AdamW(encoder_param, use_zero=accel.use_ddp)
+        scheduler_e = ExponentialLR(optimizer_e)
+        
     with argbind.scope(args, "discriminator"):
         optimizer_d = AdamW(discriminator.parameters(), use_zero=accel.use_ddp)
         scheduler_d = ExponentialLR(optimizer_d)
@@ -195,6 +203,8 @@ def load(
         generator=generator,
         optimizer_g=optimizer_g,
         scheduler_g=scheduler_g,
+        optimizer_e=optimizer_e,
+        scheduler_e=scheduler_e,
         discriminator=discriminator,
         optimizer_d=optimizer_d,
         scheduler_d=scheduler_d,
@@ -237,10 +247,11 @@ def get_audio(batch, state, accel):
 
     out = state.generator(signal.audio_data, signal.sample_rate)
     recons = AudioSignal(out["audio"], signal.sample_rate)
+    shifted = AudioSignal(out["p_audio"], signal.sample_rate)
 
     inp = AudioSignal(signal.audio_data, signal.sample_rate)
 
-    return inp, recons, signal.sample_rate
+    return inp, recons, shifted, signal.sample_rate
 
 
 @timer()
@@ -281,9 +292,17 @@ def train_loop(state, batch, accel, lambdas):
             output["adv/feat_loss"],
         ) = state.gan_loss.generator_loss(recons, signal)
         
-        output["ce/unit_loss"] = unit_loss
-                
+        output["ce/unit_loss"] = unit_loss 
         output["loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
+
+    # -------------------------
+    state.optimizer_e.zero_grad()
+    accel.backward(output["ce/unit_loss"])
+    accel.scaler.unscale_(state.optimizer_e)
+    accel.step(state.optimizer_e)
+    state.scheduler_e.step()
+    accel.update()
+    # -------------------------
 
     state.optimizer_g.zero_grad()
     accel.backward(output["loss"])
@@ -371,11 +390,12 @@ def validate(state, val_dataloader, accel):
         output = val_loop(batch, state, accel)
         last_batch = batch
 
-    inp, recon, sr = get_audio(last_batch, state, accel)
+    inp, recon, shifted, sr = get_audio(last_batch, state, accel)
     inp = inp.audio_data.float()
     recon = recon.audio_data.float()
+    shifted = shifted.audio_data.float()
 
-    audio = torch.cat([inp, recon], -1)
+    audio = torch.cat([shifted, inp, recon], -1)
     audio = list(map(lambda x: x.cpu(), audio))
     audio_to_export = torch.cat(audio, 0)[:8].reshape(-1).numpy()
 
@@ -407,10 +427,9 @@ def train(
     num_workers: int = 8,
     val_idx: list = [0, 1, 2, 3, 4, 5, 6, 7],
     lambdas: dict = {
-        "mel/loss": 100.0,
+        "mel/loss": 15.0,
         "adv/feat_loss": 2.0,
         "adv/gen_loss": 1.0,
-        "ce/unit_loss": 1.0,
     },
 ):
     util.seed(seed)
@@ -475,10 +494,10 @@ def train(
 
 
 if __name__ == "__main__":
-
-    wandb.init(project="vc-descript", name="test")
     
     args = argbind.parse_args()
+    wandb.init(project="vc-descript", name=args['save_path'].split('/')[1])
+    
     args["args.debug"] = int(os.getenv("LOCAL_RANK", 0)) == 0
     with argbind.scope(args):
         with Accelerator() as accel:

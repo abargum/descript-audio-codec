@@ -26,3 +26,9 @@ def extract_utterance_fcpe(y, sr: int, frame_len_samples: int):
 def get_f0_fcpe(y, fs: int, win_length: int):
     f0 = extract_utterance_fcpe(y, fs, win_length)
     return f0
+
+def extract_f0_median_std(f0s: torch.Tensor):
+    f0s = f0s[~torch.isnan(f0s)]
+    f0s_median = torch.median(f0s)
+    f0s_std = torch.std(f0s)
+    return f0s_median, f0s_std

@@ -1,7 +1,8 @@
-from .pitch import get_f0_fcpe
-from .blocks import EncoderV2, GeneratorV2Sine, SpeakerRAVE
+from .pitch import get_f0_fcpe, extract_f0_median_std
+from .blocks import EncoderV2, GeneratorV2Sine
+from .blocks2 import SpeakerRAVE
 from .pqmf import CachedPQMF as PQMF
-from .augmentations import ComposeTransforms, AddNoise, PitchAug
+from .augmentations import ComposeTransforms, AddNoise, PitchAug, PitchAndFormant
 
 import gin
 import numpy as np
@@ -33,7 +34,7 @@ class RAVE(BaseModel):
     def __init__(
         self,
         latent_size = 64,
-        capacity = 16,
+        capacity = 64,
         sampling_rate = 44100,
         valid_signal_crop = True):
         super().__init__()
@@ -72,8 +73,8 @@ class RAVE(BaseModel):
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
 
-        transforms = {"noise": add_noise, "lpf": shift_pitch}
-        probabilities = {"noise": 0.5, "lpf": 1.0}
+        transforms = {"noise": add_noise, "shift": shift_pitch}
+        probabilities = {"noise": 0.5, "shift": 1.0}
 
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
 
@@ -108,11 +109,11 @@ class RAVE(BaseModel):
         
         length = audio_data.shape[-1]
 
-        audio_resampled = resample(audio_data.squeeze(1), self.sample_rate, 16000)
-        target_units = torch.zeros(audio_resampled.shape[0], 18)
-        
-        for i, sequence in enumerate(audio_resampled):
-            target_units[i, :] = self.discrete_units.units(sequence.unsqueeze(0).unsqueeze(0))
+        with torch.no_grad():
+            audio_resampled = resample(audio_data.squeeze(1), self.sample_rate, 16000)
+            target_units = torch.zeros(audio_resampled.shape[0], 18)
+            for i, sequence in enumerate(audio_resampled):
+                target_units[i, :] = self.discrete_units.units(sequence.unsqueeze(0).unsqueeze(0))
 
         f0 = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
         f0 = f0[:, :, 0]
@@ -135,11 +136,37 @@ class RAVE(BaseModel):
         return {
             "audio": y[..., :length],
             "ce/unit_loss": ce_loss,
+            "p_audio": audio_aug.unsqueeze(1),
         }
+
+    def predict(self, audio_data: torch.Tensor, target: torch.Tensor):
+
+        length = audio_data.shape[-1]
+
+        f0_in = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
+        f0_in = f0_in[:, :, 0]
+        in_med, in_std = extract_f0_median_std(f0_in)
         
-
+        f0_target = get_f0_fcpe(target.squeeze(1), self.sample_rate, 1024)
+        f0_target = f0_target[:, :, 0]
+        tar_med, tar_std = extract_f0_median_std(f0_target)
         
+        audio_multiband = self.pqmf(audio_data)
+        target_multiband = self.pqmf(target)
+        z = self.encoder(audio_multiband[:, :6, :])
 
+        with torch.no_grad():
+            emb = self.speaker_encoder(target_multiband).unsqueeze(2)
+        emb = emb.repeat(1, 1, z.shape[-1])
 
+        f0_in[f0_in == 0] = float('nan')
+        
+        standardized_source_pitch = (f0_in - in_med.to(f0_in)) / in_std.to(f0_in)
+        source_pitch = (standardized_source_pitch * torch.tensor(35).to(f0_in)) + torch.tensor(200).to(f0_in)
+        source_pitch = source_pitch * 1.0
+        source_pitch[torch.isnan(source_pitch)] = 0
 
-
+        y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb.to(z)), dim=1), source_pitch.to(z))
+        y = self.pqmf.inverse(y_multiband)
+        
+        return y[..., :length]

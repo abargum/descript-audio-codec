@@ -1,15 +1,5 @@
 # Model setup
-DAC.sample_rate: 44100
-DAC.encoder_dim: 16
-DAC.encoder_rates: [2, 4, 8, 8]
-DAC.decoder_dim: 384
-DAC.decoder_rates: [8, 8, 4, 2]
-
-# Quantization
-DAC.n_codebooks: 9
-DAC.codebook_size: 256
-DAC.codebook_dim: 8
-DAC.quantizer_dropout: 1.0
+RAVE.sample_rate: 44100
 
 # Discriminator
 Discriminator.sample_rate: 44100
@@ -25,17 +15,17 @@ Discriminator.bands:
 
 # Optimization
 AdamW.betas: [0.8, 0.99]
-AdamW.lr: 0.0001
+AdamW.lr: 0.0003
 ExponentialLR.gamma: 0.999996
 
 amp: false
-val_batch_size: 100
+val_batch_size: 100 #overwritten in gpu yml
 device: cuda
 num_iters: 850000
-save_iters: [10000, 50000, 100000, 200000, 300000, 40000, 500000, 600000, 700000, 800000, 900000]
+save_iters: [10000, 50000, 100000, 200000, 300000, 400000, 500000, 600000, 700000, 800000, 900000]
 valid_freq: 10000
 sample_freq: 10000
-num_workers: 32
+num_workers: 32 #overwritten in gpu yml
 val_idx: [0, 1, 2, 3, 4, 5, 6, 7]
 seed: 0
 lambdas:
@@ -67,29 +57,27 @@ MelSpectrogramLoss.clamp_eps: 1.0e-5
 MelSpectrogramLoss.mag_weight: 0.0
 
 # Data
-batch_size: 2
-train/AudioDataset.duration: 0.38
+batch_size: 2 #overwritten in gpu yml
+
 train/AudioDataset.n_examples: 10000000
+train/build_dataset.duration: 2.972155 #0.3715193
+train/build_dataset.folders:
+  music_hq:
+    - myData
 
-val/AudioDataset.duration: 5.0
 val/build_transform.augment_prob: 1.0
-val/AudioDataset.n_examples: 250
+val/AudioDataset.n_examples: 1000
+val/build_dataset.duration: 2.972155 #0.3715193
+val/build_dataset.folders:
+  music_hq:
+    - validation_set
 
-test/AudioDataset.duration: 10.0
 test/build_transform.augment_prob: 1.0
 test/AudioDataset.n_examples: 1000
+test/build_dataset.duration: 2.972155 #0.3715193
+#test/build_dataset.folders:
+#  music_hq:
+#   - ../musical_instrument_embedding/nsynth-test
 
 AudioLoader.shuffle: true
 AudioDataset.without_replacement: true
-
-train/build_dataset.folders:
-  music_hq:
-    - ../musical_instrument_embedding/nsynth-train
-
-val/build_dataset.folders:
-  music_hq:
-    - ../musical_instrument_embedding/nsynth-valid
-
-test/build_dataset.folders:
-  music_hq:
-   - ../musical_instrument_embedding/nsynth-test
