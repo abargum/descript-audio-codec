@@ -14,8 +14,12 @@ Discriminator.bands:
   - [0.75, 1.0]
 
 # Optimization
-AdamW.betas: [0.8, 0.99]
-AdamW.lr: 0.0003
+AdamW_G.betas: [0.8, 0.99]
+AdamW_G.lr: 0.0001
+
+AdamW_D.betas: [0.8, 0.99]
+AdamW_D.lr: 0.0001
+
 ExponentialLR.gamma: 0.999996
 
 amp: false
@@ -59,7 +63,7 @@ MelSpectrogramLoss.mag_weight: 0.0
 # Data
 batch_size: 2 #overwritten in gpu yml
 
-train/AudioDataset.n_examples: 10000000
+train/AudioDataset.n_examples: 10000000 #124177
 train/build_dataset.duration: 2.972155 #0.3715193
 train/build_dataset.folders:
   music_hq:

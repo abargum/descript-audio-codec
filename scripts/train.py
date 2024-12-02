@@ -30,14 +30,14 @@ torch.backends.cudnn.benchmark = bool(int(os.getenv("CUDNN_BENCHMARK", 1)))
 # Uncomment to trade memory for speed.
 
 # Optimizers
-AdamW = argbind.bind(torch.optim.AdamW, "generator", "discriminator")
-Accelerator = argbind.bind(ml.Accelerator, without_prefix=True)
+AdamW_G = argbind.bind(torch.optim.AdamW, "generator")
+AdamW_D = argbind.bind(torch.optim.AdamW, "discriminator")
 
+Accelerator = argbind.bind(ml.Accelerator, without_prefix=True)
 
 @argbind.bind("generator", "discriminator")
 def ExponentialLR(optimizer, gamma: float = 1.0):
     return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma)
-
 
 # Models
 RAVE = argbind.bind(RAVE)
@@ -108,14 +108,14 @@ def build_dataset(
 class State:
     generator: RAVE
 
-    optimizer_e: AdamW
+    optimizer_e: AdamW_G
     scheduler_e: ExponentialLR
     
-    optimizer_g: AdamW
+    optimizer_g: AdamW_G
     scheduler_g: ExponentialLR
 
     discriminator: Discriminator
-    optimizer_d: AdamW
+    optimizer_d: AdamW_D
     scheduler_d: ExponentialLR
 
     stft_loss: losses.MultiScaleSTFTLoss
@@ -164,16 +164,16 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        optimizer_g = AdamW(generator.decoder.parameters(), use_zero=accel.use_ddp)
+        optimizer_g = AdamW_G(generator.decoder.parameters(), use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
 
         encoder_param = list(generator.encoder.parameters())
         encoder_param += list(generator.ce_projection.parameters())
-        optimizer_e = AdamW(encoder_param, use_zero=accel.use_ddp)
+        optimizer_e = AdamW_G(encoder_param, use_zero=accel.use_ddp)
         scheduler_e = ExponentialLR(optimizer_e)
         
     with argbind.scope(args, "discriminator"):
-        optimizer_d = AdamW(discriminator.parameters(), use_zero=accel.use_ddp)
+        optimizer_d = AdamW_D(discriminator.parameters(), use_zero=accel.use_ddp)
         scheduler_d = ExponentialLR(optimizer_d)
 
     if "optimizer.pth" in g_extra:
@@ -267,7 +267,7 @@ def train_loop(state, batch, accel, lambdas):
         )
 
     with accel.autocast():
-        out = state.generator(signal.audio_data, signal.sample_rate)
+        out = state.generator(signal.audio_data, batch["path"], signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
         unit_loss = out["ce/unit_loss"]
 

@@ -1,7 +1,7 @@
 import torch
 
 class PitchRegisterTracker(torch.nn.Module):
-    def __init__(self, target_mean: float, target_std: float):
+    def __init__(self, target_mean: float, target_std: float, buffer_size: int = 1000):
         super().__init__()
         """
         Initialize the pitch register tracker with target statistics.
@@ -14,7 +14,7 @@ class PitchRegisterTracker(torch.nn.Module):
         self.target_log_mean: float = torch.log2(torch.tensor(target_mean)).item()
         self.target_log_std: float = target_std / (target_mean * 0.693147)  # ln(2) ≈ 0.693147
         
-        self.buffer_size: int = 1000
+        self.buffer_size: int = buffer_size
         self.source_buffer: torch.Tensor = torch.zeros(self.buffer_size)
         self.current_buffer_size: int = 0
         self.buffer_idx: int = 0
@@ -36,7 +36,10 @@ class PitchRegisterTracker(torch.nn.Module):
             
             valid_buffer = self.source_buffer[:self.current_buffer_size]
             self.source_log_mean = float(valid_buffer.mean().item())
-            self.source_log_std = float(valid_buffer.std().item())
+
+            #ensure that the buffer has more than one value to influence the std
+            if valid_buffer.numel() > 1:
+                self.source_log_std = float(valid_buffer.std().item())
             
             # Ensure std is never zero
             self.source_log_std = max(self.source_log_std, 1e-7)

@@ -6,6 +6,8 @@ import torch.nn.functional as F
 import torchaudio.functional as AF
 import math
 
+#Code from revsic speechaug: https://github.com/revsic/speechaug/blob/main/pitch/yin.py
+
 def localmin(x: torch.Tensor) -> torch.Tensor:
     """Local minima.
     Args:

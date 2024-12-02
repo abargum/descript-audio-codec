@@ -4,6 +4,7 @@ import os
 import torch
 from typing import Tuple
 import argparse
+from scipy.io import wavfile 
 
 torch.set_grad_enabled(False)
 
@@ -16,7 +17,7 @@ from absl import flags
 import librosa
 from rave.rave_model import RAVE
 
-emb_audio, _ = librosa.load("scripts/rave/p228_005_mic1.flac", sr=44100, mono=True)
+emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
 emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
 
 import rave.blocks
@@ -44,8 +45,8 @@ class ScriptedRAVE(nn_tilde.Module):
         emb_audio_pqmf = self.pqmf(emb_audio)
         self.speaker = self.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
 
-        self.yin = YIN(sr=self.sr, frame_time=0.0105)
-        self.p_tracker = PitchRegisterTracker(target_mean=211.83, target_std=35.76)
+        self.yin = YIN(sr = self.sr, frame_time = 0.0105)
+        self.p_tracker = PitchRegisterTracker(target_mean=188.81, target_std=42.20, buffer_size=1000)
 
         self.resampler = None
 
@@ -177,8 +178,9 @@ def main():
     sample_rate = generator.sample_rate
 
     x = torch.zeros(1, 1, 2**17).to(torch.device('cpu'))
-    y = generator.predict(x, x)
-    print("Shape of test input:", y.shape)
+    p = torch.zeros(1, 128).to(torch.device('cpu'))
+    y = generator.predict_no_pitch(x, x, p)
+    print("Shape of test output:", y.shape)
 
     """
     for m in pretrained.modules():
@@ -193,6 +195,35 @@ def main():
         target_sr=sample_rate,
     )
 
+    # ------ FOR TEST ------
+    x, sr = librosa.load("audio/male.wav", sr=44100, mono=True)
+    x = torch.tensor(x[:1*131072]).unsqueeze(0).unsqueeze(0)
+    chunk_size = 2048
+    num_chunks = (x.shape[-1] + chunk_size - 1) // chunk_size
+
+    processed_chunks = []
+    for i in range(num_chunks):
+        # Extract the current chunk
+        start = i * chunk_size
+        end = min((i + 1) * chunk_size, x.shape[-1])
+        chunk = x[:, :, start:end]
+        
+        # If the last chunk is smaller than chunk_size, pad it
+        if chunk.shape[-1] < chunk_size:
+            padding = torch.zeros(1, 1, chunk_size - chunk.shape[-1])
+            chunk = torch.cat([chunk, padding], dim=-1)
+        
+        # Process the chunk
+        chunk = chunk.float()
+        y = scripted_rave((chunk, torch.ones(1), torch.ones(1)))
+        processed_chunks.append(y)
+    
+    out = torch.cat(processed_chunks, dim=-1)
+    out = out[0, 0, :].detach().cpu().numpy()
+    wavfile.write('audio/output/export_test.wav', sr, out)
+    
+    # ----------------------
+    
     print("Saving model..")
     model_name = name
     model_name += ".ts"
