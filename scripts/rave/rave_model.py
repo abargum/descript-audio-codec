@@ -1,4 +1,4 @@
-from .pitch import get_f0_fcpe, extract_f0_median_std
+from .pitch import get_f0_fcpe, extract_f0_mean_std
 from .blocks import GeneratorV2Sine
 from .blocks2 import SpeakerRAVE, EncoderV2
 from .pqmf import CachedPQMF as PQMF
@@ -20,13 +20,13 @@ emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
 class CrossEntropyProjection(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(128)
+        self.layer_norm = torch.nn.LayerNorm(16)
         self.proj = nn.Conv1d(64, 100, 1, bias=False)
         
     def forward(self, x):
         z_for_CE = self.layer_norm(x)
         z_for_CE = self.proj(z_for_CE)
-        z_for_CE = F.interpolate(z_for_CE, 148)
+        z_for_CE = F.interpolate(z_for_CE, 18)
         return z_for_CE
 
 class RAVE(BaseModel):
@@ -34,7 +34,7 @@ class RAVE(BaseModel):
     def __init__(
         self,
         latent_size = 64,
-        capacity = 64,
+        capacity = 16,
         sampling_rate = 44100,
         valid_signal_crop = True):
         super().__init__()
@@ -111,7 +111,7 @@ class RAVE(BaseModel):
 
         with torch.no_grad():
             audio_resampled = resample(audio_data.squeeze(1), self.sample_rate, 16000)
-            target_units = torch.zeros(audio_resampled.shape[0], 148)
+            target_units = torch.zeros(audio_resampled.shape[0], 18)
             for i, sequence in enumerate(audio_resampled):
                 target_units[i, :] = self.discrete_units.units(sequence.unsqueeze(0).unsqueeze(0))
 
@@ -137,6 +137,8 @@ class RAVE(BaseModel):
             "audio": y[..., :length],
             "ce/unit_loss": ce_loss,
             "p_audio": audio_aug.unsqueeze(1),
+            "x_multiband": audio_multiband,
+            "y_multiband": y_multiband,
         }
 
     def predict(self, audio_data: torch.Tensor, target: torch.Tensor):
@@ -145,11 +147,11 @@ class RAVE(BaseModel):
 
         f0_in = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
         f0_in = f0_in[:, :, 0]
-        in_med, in_std = extract_f0_median_std(f0_in)
+        in_med, in_std = extract_f0_mean_std(f0_in)
         
         f0_target = get_f0_fcpe(target.squeeze(1), self.sample_rate, 1024)
         f0_target = f0_target[:, :, 0]
-        tar_med, tar_std = extract_f0_median_std(f0_target)
+        tar_med, tar_std = extract_f0_mean_std(f0_target)
         
         audio_multiband = self.pqmf(audio_data)
         target_multiband = self.pqmf(target)

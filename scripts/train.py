@@ -21,6 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 import dac
 from rave.rave_model import RAVE
 import wandb
+from einops import rearrange
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -270,8 +271,12 @@ def train_loop(state, batch, accel, lambdas):
 
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
+        
         recons = AudioSignal(out["audio"], signal.sample_rate)
         unit_loss = out["ce/unit_loss"]
+
+        x_multiband = AudioSignal(rearrange(out["x_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
+        y_multiband = AudioSignal(rearrange(out["y_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
 
     with accel.autocast():
         output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
@@ -286,6 +291,7 @@ def train_loop(state, batch, accel, lambdas):
     state.scheduler_d.step()
 
     with accel.autocast():
+        output["multiband/loss"] = state.stft_loss(y_multiband, x_multiband)
         output["stft/loss"] = state.stft_loss(recons, signal)
         output["mel/loss"] = state.mel_loss(recons, signal)
         output["waveform/loss"] = state.waveform_loss(recons, signal)
@@ -318,6 +324,7 @@ def train_loop(state, batch, accel, lambdas):
 
     wandb.log({"stft": output["stft/loss"],
                "mel": output["mel/loss"],
+               "multiband": output["multiband/loss"],
                "waveform": output["waveform/loss"],
                "generator": output["adv/gen_loss"],
                "feature": output["adv/feat_loss"],
