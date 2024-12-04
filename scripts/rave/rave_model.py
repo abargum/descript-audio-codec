@@ -14,7 +14,7 @@ from audiotools.ml import BaseModel
 
 import librosa
 
-emb_audio, _ = librosa.load("scripts/rave/p228_005_mic1.flac", sr=44100, mono=True)
+emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
 emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
 
 class CrossEntropyProjection(nn.Module):
