@@ -5,8 +5,6 @@ import torch.nn as nn
 from torch_pitch_shift import pitch_shift, semitones_to_ratio, get_fast_shifts
 from typing import Dict
 
-from .perturbations import perturb_pitch_and_formant
-
 def calculate_rms(samples):
     """
     Calculates the root mean square.
@@ -69,46 +67,7 @@ class ComposeTransforms(nn.Module):
             if random.random() < p:
                 data = t(data)
         return data
-
-class PitchAndFormant(nn.Module):
-    def __init__(self, sampling_rate: int):
-        super().__init__()
-        self.sampling_rate = sampling_rate
-
-    def forward(self, data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        batch_audio = data["audio"]  # Shape: (B, 1, length)
-        batch_size, _, length = batch_audio.shape
-        sample_rate = 44100  # Assuming a fixed sample rate; modify as needed
-
-        # Process each audio sample in the batch
-        transformed_audio = []
-        for i in range(batch_size):
-            manipulated_sound = formant_only(batch_audio[i, 0], self.sampling_rate)
-            transformed_audio.append(torch.tensor(manipulated_sound))
-
-        # Stack the transformed audio into a single tensor
-        transformed_audio = torch.stack(transformed_audio, dim=0).unsqueeze(1)
-        transformed_data = data.copy()
-        transformed_data["audio"] = transformed_audio
-
-        return transformed_data
-
-#not working on batched input
-class PitchAndFormant(nn.Module):
-    def __init__(
-        self, sample_rate=48000
-    ) -> None:
-        super().__init__()
-        self.sample_rate = sample_rate
-
-    def forward(self, data: Dict[str, torch.Tensor]):
-        x = data["audio"][:, None, :]
-        x = wav_to_Sound(x.detach().cpu().numpy(), sampling_frequency=self.sample_rate)
-        x = formant_and_pitch_shift(x)
-        transformed = data.copy()
-        transformed["audio"] = x.values.to(data.device)
         
-        return transformed
 
 # Based on torch-audiomentations (MIT License)
 class PitchAug(nn.Module):

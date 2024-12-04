@@ -27,7 +27,7 @@ val_batch_size: 100 #overwritten in gpu yml
 device: cuda
 num_iters: 850000
 save_iters: [10000, 50000, 100000, 200000, 300000, 400000, 500000, 600000, 700000, 800000, 900000]
-valid_freq: 10000
+valid_freq: 5000
 sample_freq: 10000
 num_workers: 32 #overwritten in gpu yml
 val_idx: [0, 1, 2, 3, 4, 5, 6, 7]
@@ -63,7 +63,7 @@ MelSpectrogramLoss.mag_weight: 0.0
 # Data
 batch_size: 2 #overwritten in gpu yml
 
-train/AudioDataset.n_examples: 10000000 #124177
+train/AudioDataset.n_examples: 10000000
 train/build_dataset.duration: 2.972155 #0.3715193
 train/build_dataset.folders:
   music_hq:

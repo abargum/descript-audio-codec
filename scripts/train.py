@@ -35,9 +35,11 @@ AdamW_D = argbind.bind(torch.optim.AdamW, "discriminator")
 
 Accelerator = argbind.bind(ml.Accelerator, without_prefix=True)
 
+
 @argbind.bind("generator", "discriminator")
 def ExponentialLR(optimizer, gamma: float = 1.0):
     return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma)
+
 
 # Models
 RAVE = argbind.bind(RAVE)
@@ -267,7 +269,7 @@ def train_loop(state, batch, accel, lambdas):
         )
 
     with accel.autocast():
-        out = state.generator(signal.audio_data, batch["path"], signal.sample_rate)
+        out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
         unit_loss = out["ce/unit_loss"]
 

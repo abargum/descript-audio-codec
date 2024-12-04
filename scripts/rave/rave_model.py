@@ -1,6 +1,6 @@
-from .pitch import get_f0_fcpe, extract_f0_mean_std
-#from .blocks import GeneratorV2Sine
-from .blocks2 import SpeakerRAVE, EncoderV2, GeneratorV2Sine
+from .pitch import get_f0_fcpe, extract_f0_median_std
+from .blocks import GeneratorV2Sine
+from .blocks2 import SpeakerRAVE, EncoderV2
 from .pqmf import CachedPQMF as PQMF
 from .augmentations import ComposeTransforms, AddNoise, PitchAug
 
@@ -13,38 +13,20 @@ import torch.nn.functional as F
 from audiotools.ml import BaseModel
 
 import librosa
-import pickle
-from typing import List
 
-def load_audio_features(file_path):
-    with open(file_path, 'rb') as f:
-        return pickle.load(f)
-
-def extract_batch_features(batch_audio_paths, audio_features, feature_name='units'):
-    batch_features = []
-    for path in batch_audio_paths:
-        if path in audio_features:
-            feat = audio_features[path][feature_name]
-            batch_features.append(feat.float())
-    
-    return torch.stack(batch_features, dim=0)
-
-
-unit_dict = load_audio_features('metadata.pkl')
-
-emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
+emb_audio, _ = librosa.load("scripts/rave/p228_005_mic1.flac", sr=44100, mono=True)
 emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
 
 class CrossEntropyProjection(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(16)
+        self.layer_norm = torch.nn.LayerNorm(128)
         self.proj = nn.Conv1d(64, 100, 1, bias=False)
         
     def forward(self, x):
         z_for_CE = self.layer_norm(x)
         z_for_CE = self.proj(z_for_CE)
-        z_for_CE = F.interpolate(z_for_CE, 18)
+        z_for_CE = F.interpolate(z_for_CE, 148)
         return z_for_CE
 
 class RAVE(BaseModel):
@@ -59,7 +41,6 @@ class RAVE(BaseModel):
 
         self.sample_rate = sampling_rate
 
-        #possibly trained when we optimize for generator.params()
         self.pqmf = PQMF(attenuation = 100, n_band = 16)
 
         self.encoder = EncoderV2(data_size = 6,
@@ -122,7 +103,6 @@ class RAVE(BaseModel):
 
     def forward(self,
                 audio_data: torch.Tensor,
-                path: List = None,
                 sample_rate: int = None):
 
         audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
@@ -131,15 +111,9 @@ class RAVE(BaseModel):
 
         with torch.no_grad():
             audio_resampled = resample(audio_data.squeeze(1), self.sample_rate, 16000)
-            target_units = torch.zeros(audio_resampled.shape[0], 18)
+            target_units = torch.zeros(audio_resampled.shape[0], 148)
             for i, sequence in enumerate(audio_resampled):
                 target_units[i, :] = self.discrete_units.units(sequence.unsqueeze(0).unsqueeze(0))
-
-        if path:
-            units = extract_batch_features(path, unit_dict, feature_name='units')
-            print(torch.allclose(target_units, units))
-            print(units[0])
-            print(target_units[0])
 
         f0 = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
         f0 = f0[:, :, 0]
@@ -156,7 +130,7 @@ class RAVE(BaseModel):
             emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
 
-        y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb), dim=1), f0.to(z.device))
+        y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb), dim=1), f0)
         y = self.pqmf.inverse(y_multiband)
         
         return {
@@ -171,11 +145,11 @@ class RAVE(BaseModel):
 
         f0_in = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
         f0_in = f0_in[:, :, 0]
-        in_mean, in_std = extract_f0_mean_std(f0_in)
+        in_med, in_std = extract_f0_median_std(f0_in)
         
         f0_target = get_f0_fcpe(target.squeeze(1), self.sample_rate, 1024)
         f0_target = f0_target[:, :, 0]
-        tar_mean, tar_std = extract_f0_mean_std(f0_target)
+        tar_med, tar_std = extract_f0_median_std(f0_target)
         
         audio_multiband = self.pqmf(audio_data)
         target_multiband = self.pqmf(target)
@@ -187,30 +161,12 @@ class RAVE(BaseModel):
 
         f0_in[f0_in == 0] = float('nan')
         
-        standardized_source_pitch = (f0_in - in_mean.to(f0_in)) / in_std.to(f0_in)
-        source_pitch = (standardized_source_pitch * tar_std) + tar_mean
+        standardized_source_pitch = (f0_in - in_med.to(f0_in)) / in_std.to(f0_in)
+        source_pitch = (standardized_source_pitch * torch.tensor(35).to(f0_in)) + torch.tensor(200).to(f0_in)
         source_pitch = source_pitch * 1.0
         source_pitch[torch.isnan(source_pitch)] = 0
 
         y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb.to(z)), dim=1), source_pitch.to(z))
-        y = self.pqmf.inverse(y_multiband)
-        
-        return y[..., :length]
-
-    def predict_no_pitch(self, audio_data: torch.Tensor, target: torch.Tensor, pitch: torch.Tensor, upp_factor: int = 1024):
-
-        length = audio_data.shape[-1]
-        
-        audio_multiband = self.pqmf(audio_data)
-        z = self.encoder(audio_multiband[:, :6, :])
-
-        with torch.no_grad():
-            target_multiband = self.pqmf(target)
-            emb = self.speaker_encoder(target_multiband).unsqueeze(2)
-        
-        emb = emb.repeat(1, 1, z.shape[-1])
-
-        y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb.to(z)), dim=1), pitch.to(z), upp_factor=upp_factor)
         y = self.pqmf.inverse(y_multiband)
         
         return y[..., :length]
