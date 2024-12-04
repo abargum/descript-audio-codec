@@ -322,6 +322,10 @@ def train_loop(state, batch, accel, lambdas):
     state.scheduler_g.step()
     accel.update()
 
+    output["other/g_learning_rate"] = state.optimizer_g.param_groups[0]["lr"]
+    output["other/d_learning_rate"] = state.optimizer_d.param_groups[0]["lr"]
+    output["other/batch_size"] = signal.batch_size * accel.world_size
+
     wandb.log({"stft": output["stft/loss"],
                "mel": output["mel/loss"],
                "multiband": output["multiband/loss"],
@@ -330,10 +334,10 @@ def train_loop(state, batch, accel, lambdas):
                "feature": output["adv/feat_loss"],
                "discriminator": output["adv/disc_loss"],
                "unit": output["ce/unit_loss"],
-               "total": output["loss"]})
-
-    output["other/learning_rate"] = state.optimizer_g.param_groups[0]["lr"]
-    output["other/batch_size"] = signal.batch_size * accel.world_size
+               "total": output["loss"],
+               "gen_lr": output["other/g_learning_rate"],
+               "disc_lr": output["other/d_learning_rate"]
+    })
 
     return {k: v for k, v in sorted(output.items())}
 
