@@ -373,6 +373,7 @@ class AddUpDownSampling(nn.Module):
         delayed_x = self.paddings[0](x)
 
         ex_down = self.ex_conv(ex)
+        #print(x.shape, ex_down.shape)
         delayed_ex = self.paddings[1](ex_down)
 
         output = delayed_x + delayed_ex
@@ -410,7 +411,7 @@ class GeneratorV2Sine(nn.Module):
 
         self.conditioning_stages = [2, 7, 12, 17]
 
-        sine_conv_kernels = [64, 8, 2, 1]
+        sine_conv_kernels = [512, 256, 64, 16]
         downsampling_channels = []
 
         net = []
@@ -482,7 +483,7 @@ class GeneratorV2Sine(nn.Module):
 
         self.amplitude_modulation = amplitude_modulation
 
-    def forward(self, x: torch.Tensor, f0: torch.Tensor, upp_factor: int = 512) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, f0: torch.Tensor, upp_factor: int = 1024) -> Tuple[torch.Tensor, torch.Tensor]:
         
         har_source, noi_source, uv = self.m_source(f0, upp_factor)
         har_source = har_source.transpose(1, 2)
@@ -509,7 +510,33 @@ class GeneratorV2Sine(nn.Module):
             x, amplitude = x.split(x.shape[1] // 2, 1)
             x = x * torch.sigmoid(amplitude)
 
-        return torch.tanh(x)
+        return torch.tanh(x), har_source
 
     def set_warmed_up(self, state: bool):
         pass
+
+
+class Hubert:
+    def __init__(
+        self,
+        device: str = "cuda",
+    ):
+        self.device = device
+
+    def _load_model(self):
+        print(f"Loading hubert checkpoint")
+        hubert = torch.hub.load(
+            "bshall/hubert:main",
+            f"hubert_discrete",
+            trust_repo=True,
+        ).to(self.device)
+        hubert.eval()
+        self.model = hubert
+
+    def extract_features(self, wav: torch.Tensor):
+        if not hasattr(self, "model"):
+            self._load_model()
+        
+        with torch.inference_mode():
+            features = self.model.units(wav)
+        return features

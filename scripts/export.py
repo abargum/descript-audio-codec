@@ -179,7 +179,7 @@ def main():
 
     x = torch.zeros(1, 1, 2**17).to(torch.device('cpu'))
     p = torch.zeros(1, 128).to(torch.device('cpu'))
-    y = generator.predict_no_pitch(x, x, p)
+    y = generator.predict(x, x)
     print("Shape of test output:", y.shape)
 
     """

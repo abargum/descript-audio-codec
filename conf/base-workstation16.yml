@@ -1,8 +1,8 @@
 # Model setup
-RAVE.sample_rate: 44100
+RAVE.sample_rate: 16000
 
 # Discriminator
-Discriminator.sample_rate: 44100
+Discriminator.sample_rate: 16000
 Discriminator.rates: []
 Discriminator.periods: [2, 3, 5, 7, 11]
 Discriminator.fft_sizes: [2048, 1024, 512]
@@ -64,26 +64,21 @@ MelSpectrogramLoss.mag_weight: 0.0
 batch_size: 2 #overwritten in gpu yml
 
 train/AudioDataset.n_examples: 44242
-train/build_dataset.duration: 0.3715193 #2.048 #2.972155 
+train/build_dataset.duration: 2.048
 train/build_dataset.folders:
   music_hq:
-    #- ../vctk-small
     - VCTK-Corpus/wav48
 
 val/build_transform.augment_prob: 1.0
-val/AudioDataset.n_examples: 200
-val/build_dataset.duration: 0.3715193 #2.972155 #2.048
+val/AudioDataset.n_examples: 1000
+val/build_dataset.duration: 2.048
 val/build_dataset.folders:
   music_hq:
-    #- ../vctk-small
     - validation-set
 
 test/build_transform.augment_prob: 1.0
 test/AudioDataset.n_examples: 100
-test/build_dataset.duration: 0.3715193 #2.972155 #2.048
-test/build_dataset.folders:
-  music_hq:
-    - ../vctk-small
+test/build_dataset.duration: 2.048
 
 AudioLoader.shuffle: true
 AudioDataset.without_replacement: true

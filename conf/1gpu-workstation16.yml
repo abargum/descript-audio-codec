@@ -1,5 +1,5 @@
 $include:
-  - conf/base-workstation.yml
+  - conf/base-workstation16.yml
 
 batch_size: 4
 val_batch_size: 4

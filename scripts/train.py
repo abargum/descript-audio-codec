@@ -20,6 +20,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 import dac
 from rave.rave_model import RAVE
+from rave.vcae import VCAE
 import wandb
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -40,7 +41,7 @@ def ExponentialLR(optimizer, gamma: float = 1.0):
     return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma)
 
 # Models
-RAVE = argbind.bind(RAVE)
+RAVE = argbind.bind(VCAE)
 
 Discriminator = argbind.bind(dac.model.Discriminator)
 
@@ -248,6 +249,7 @@ def get_audio(batch, state, accel):
     out = state.generator(signal.audio_data, signal.sample_rate)
     recons = AudioSignal(out["audio"], signal.sample_rate)
     shifted = AudioSignal(out["p_audio"], signal.sample_rate)
+    #harmonic = AudioSignal(out["harmonic"], signal.sample_rate)
 
     inp = AudioSignal(signal.audio_data, signal.sample_rate)
 

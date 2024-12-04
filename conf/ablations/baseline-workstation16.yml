@@ -1,0 +1,3 @@
+$include:
+  - conf/base-workstation16.yml
+  - conf/1gpu-workstation16.yml

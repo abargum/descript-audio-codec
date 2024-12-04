@@ -29,6 +29,6 @@ def copy_random_audio_files(source_dir, destination_dir, num_files=1000):
     print(f"Copied {len(selected_files)} files to '{destination_dir}'.")
 
 # Example usage
-source_directory = "/path/to/source_directory"  # Replace with the source directory
-destination_directory = "/path/to/destination_directory"  # Replace with the destination directory
+source_directory = "VCTK-Corpus/wav48"  # Replace with the source directory
+destination_directory = "validation-set"  # Replace with the destination directory
 copy_random_audio_files(source_directory, destination_directory, 1000)
