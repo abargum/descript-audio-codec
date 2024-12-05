@@ -31,10 +31,10 @@ torch.backends.cudnn.benchmark = bool(int(os.getenv("CUDNN_BENCHMARK", 1)))
 # Uncomment to trade memory for speed.
 
 # Optimizers
-AdamW = argbind.bind(torch.optim.AdamW, "encoder", "generator", "discriminator")
+AdamW = argbind.bind(torch.optim.AdamW, "generator", "discriminator")
 Accelerator = argbind.bind(ml.Accelerator, without_prefix=True)
 
-@argbind.bind("encoder", "generator", "discriminator")
+@argbind.bind("generator", "discriminator")
 def ExponentialLR(optimizer, gamma: float = 1.0):
     return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma)
 
@@ -107,9 +107,6 @@ def build_dataset(
 @dataclass
 class State:
     generator: RAVE
-
-    optimizer_e: AdamW
-    scheduler_e: ExponentialLR
     
     optimizer_g: AdamW
     scheduler_g: ExponentialLR
@@ -164,14 +161,8 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        optimizer_g = AdamW(generator.decoder.parameters(), use_zero=accel.use_ddp)
+        optimizer_g = AdamW(generator.parameters(), use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
-
-    with argbind.scope(args, "encoder"):
-        encoder_param = list(generator.encoder.parameters())
-        encoder_param += list(generator.ce_projection.parameters())
-        optimizer_e = AdamW(encoder_param, use_zero=accel.use_ddp)
-        scheduler_e = ExponentialLR(optimizer_e)
         
     with argbind.scope(args, "discriminator"):
         optimizer_d = AdamW(discriminator.parameters(), use_zero=accel.use_ddp)
@@ -204,8 +195,6 @@ def load(
         generator=generator,
         optimizer_g=optimizer_g,
         scheduler_g=scheduler_g,
-        optimizer_e=optimizer_e,
-        scheduler_e=scheduler_e,
         discriminator=discriminator,
         optimizer_d=optimizer_d,
         scheduler_d=scheduler_d,
@@ -303,13 +292,6 @@ def train_loop(state, batch, accel, lambdas, update_disc_every):
 
     # -------------------------
     if state.tracker.step % update_disc_every != 0 or update_disc_every == 1:
-       state.optimizer_e.zero_grad()
-       accel.backward(output["ce/unit_loss"])
-       accel.scaler.unscale_(state.optimizer_e)
-       accel.step(state.optimizer_e)
-       state.scheduler_e.step()
-    # -------------------------
-
        state.optimizer_g.zero_grad()
        accel.backward(output["loss"])
        accel.scaler.unscale_(state.optimizer_g)
@@ -321,7 +303,6 @@ def train_loop(state, batch, accel, lambdas, update_disc_every):
     
     accel.update()
 
-    output["other/e_learning_rate"] = state.optimizer_e.param_groups[0]["lr"]
     output["other/g_learning_rate"] = state.optimizer_g.param_groups[0]["lr"]
     output["other/d_learning_rate"] = state.optimizer_d.param_groups[0]["lr"]
     output["other/batch_size"] = signal.batch_size * accel.world_size
@@ -334,7 +315,6 @@ def train_loop(state, batch, accel, lambdas, update_disc_every):
                "discriminator": output["adv/disc_loss"],
                "unit": output["ce/unit_loss"],
                "total": output["loss"],
-               "enc_lr":output["other/e_learning_rate"],
                "gen_lr": output["other/g_learning_rate"],
                "disc_lr": output["other/d_learning_rate"],
                "multiband": output["multiband/loss"]})

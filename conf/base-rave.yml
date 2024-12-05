@@ -16,7 +16,6 @@ Discriminator.bands:
 # Optimization
 AdamW.betas: [0.8, 0.99]
 
-encoder/AdamW.lr:       0.0002
 generator/AdamW.lr:     0.0002
 discriminator/AdamW.lr: 0.0001
 
@@ -38,6 +37,7 @@ lambdas:
   adv/feat_loss: 2.0
   adv/gen_loss: 1.0
   multiband/loss: 5.0
+  ce/unit_loss: 1.0
 
 VolumeNorm.db: [const, -16]
 
