@@ -31,9 +31,7 @@ torch.backends.cudnn.benchmark = bool(int(os.getenv("CUDNN_BENCHMARK", 1)))
 # Uncomment to trade memory for speed.
 
 # Optimizers
-AdamW_G = argbind.bind(torch.optim.AdamW, "generator")
-AdamW_D = argbind.bind(torch.optim.AdamW, "discriminator")
-
+AdamW = argbind.bind(torch.optim.AdamW, "generator", "discriminator")
 Accelerator = argbind.bind(ml.Accelerator, without_prefix=True)
 
 
@@ -111,14 +109,14 @@ def build_dataset(
 class State:
     generator: RAVE
 
-    optimizer_e: AdamW_G
+    optimizer_e: AdamW
     scheduler_e: ExponentialLR
     
-    optimizer_g: AdamW_G
+    optimizer_g: AdamW
     scheduler_g: ExponentialLR
 
     discriminator: Discriminator
-    optimizer_d: AdamW_D
+    optimizer_d: AdamW
     scheduler_d: ExponentialLR
 
     stft_loss: losses.MultiScaleSTFTLoss
@@ -167,16 +165,16 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        optimizer_g = AdamW_G(generator.decoder.parameters(), use_zero=accel.use_ddp)
+        optimizer_g = AdamW(generator.decoder.parameters(), use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
 
         encoder_param = list(generator.encoder.parameters())
         encoder_param += list(generator.ce_projection.parameters())
-        optimizer_e = AdamW_G(encoder_param, use_zero=accel.use_ddp)
+        optimizer_e = AdamW(encoder_param, use_zero=accel.use_ddp)
         scheduler_e = ExponentialLR(optimizer_e)
         
     with argbind.scope(args, "discriminator"):
-        optimizer_d = AdamW_D(discriminator.parameters(), use_zero=accel.use_ddp)
+        optimizer_d = AdamW(discriminator.parameters(), use_zero=accel.use_ddp)
         scheduler_d = ExponentialLR(optimizer_d)
 
     if "optimizer.pth" in g_extra:
@@ -271,7 +269,6 @@ def train_loop(state, batch, accel, lambdas):
 
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
-        
         recons = AudioSignal(out["audio"], signal.sample_rate)
         unit_loss = out["ce/unit_loss"]
 
@@ -328,7 +325,6 @@ def train_loop(state, batch, accel, lambdas):
 
     wandb.log({"stft": output["stft/loss"],
                "mel": output["mel/loss"],
-               "multiband": output["multiband/loss"],
                "waveform": output["waveform/loss"],
                "generator": output["adv/gen_loss"],
                "feature": output["adv/feat_loss"],
@@ -336,8 +332,8 @@ def train_loop(state, batch, accel, lambdas):
                "unit": output["ce/unit_loss"],
                "total": output["loss"],
                "gen_lr": output["other/g_learning_rate"],
-               "disc_lr": output["other/d_learning_rate"]
-    })
+               "disc_lr": output["other/d_learning_rate"],
+               "multiband": output["multiband/loss"]})
 
     return {k: v for k, v in sorted(output.items())}
 

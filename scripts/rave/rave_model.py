@@ -20,7 +20,7 @@ emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
 class CrossEntropyProjection(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(64)
+        self.layer_norm = torch.nn.LayerNorm(128)
         self.proj = nn.Conv1d(64, 100, 1, bias=False)
         
     def forward(self, x):
