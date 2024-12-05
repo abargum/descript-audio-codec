@@ -31,11 +31,10 @@ torch.backends.cudnn.benchmark = bool(int(os.getenv("CUDNN_BENCHMARK", 1)))
 # Uncomment to trade memory for speed.
 
 # Optimizers
-AdamW = argbind.bind(torch.optim.AdamW, "generator", "discriminator")
+AdamW = argbind.bind(torch.optim.AdamW, "encoder", "generator", "discriminator")
 Accelerator = argbind.bind(ml.Accelerator, without_prefix=True)
 
-
-@argbind.bind("generator", "discriminator")
+@argbind.bind("encoder", "generator", "discriminator")
 def ExponentialLR(optimizer, gamma: float = 1.0):
     return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma)
 
@@ -168,6 +167,7 @@ def load(
         optimizer_g = AdamW(generator.decoder.parameters(), use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
 
+    with argbind.scope(args, "encoder"):
         encoder_param = list(generator.encoder.parameters())
         encoder_param += list(generator.ce_projection.parameters())
         optimizer_e = AdamW(encoder_param, use_zero=accel.use_ddp)
@@ -256,7 +256,7 @@ def get_audio(batch, state, accel):
 
 
 @timer()
-def train_loop(state, batch, accel, lambdas):
+def train_loop(state, batch, accel, lambdas, update_disc_every):
     state.generator.train()
     state.discriminator.train()
     output = {}
@@ -278,14 +278,15 @@ def train_loop(state, batch, accel, lambdas):
     with accel.autocast():
         output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
 
-    state.optimizer_d.zero_grad()
-    accel.backward(output["adv/disc_loss"])
-    accel.scaler.unscale_(state.optimizer_d)
-    output["other/grad_norm_d"] = torch.nn.utils.clip_grad_norm_(
-        state.discriminator.parameters(), 10.0
-    )
-    accel.step(state.optimizer_d)
-    state.scheduler_d.step()
+    if state.tracker.step % update_disc_every == 0:
+        state.optimizer_d.zero_grad()
+        accel.backward(output["adv/disc_loss"])
+        accel.scaler.unscale_(state.optimizer_d)
+        output["other/grad_norm_d"] = torch.nn.utils.clip_grad_norm_(
+            state.discriminator.parameters(), 10.0
+        )
+        accel.step(state.optimizer_d)
+        state.scheduler_d.step()
 
     with accel.autocast():
         output["multiband/loss"] = state.stft_loss(y_multiband, x_multiband)
@@ -301,24 +302,26 @@ def train_loop(state, batch, accel, lambdas):
         output["loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
 
     # -------------------------
-    state.optimizer_e.zero_grad()
-    accel.backward(output["ce/unit_loss"])
-    accel.scaler.unscale_(state.optimizer_e)
-    accel.step(state.optimizer_e)
-    state.scheduler_e.step()
-    accel.update()
+    if state.tracker.step % update_disc_every != 0 or update_disc_every == 1:
+       state.optimizer_e.zero_grad()
+       accel.backward(output["ce/unit_loss"])
+       accel.scaler.unscale_(state.optimizer_e)
+       accel.step(state.optimizer_e)
+       state.scheduler_e.step()
     # -------------------------
 
-    state.optimizer_g.zero_grad()
-    accel.backward(output["loss"])
-    accel.scaler.unscale_(state.optimizer_g)
-    output["other/grad_norm"] = torch.nn.utils.clip_grad_norm_(
-        state.generator.parameters(), 1e3
-    )
-    accel.step(state.optimizer_g)
-    state.scheduler_g.step()
+       state.optimizer_g.zero_grad()
+       accel.backward(output["loss"])
+       accel.scaler.unscale_(state.optimizer_g)
+       output["other/grad_norm"] = torch.nn.utils.clip_grad_norm_(
+           state.generator.parameters(), 1e3
+       )
+       accel.step(state.optimizer_g)
+       state.scheduler_g.step()
+    
     accel.update()
 
+    output["other/e_learning_rate"] = state.optimizer_e.param_groups[0]["lr"]
     output["other/g_learning_rate"] = state.optimizer_g.param_groups[0]["lr"]
     output["other/d_learning_rate"] = state.optimizer_d.param_groups[0]["lr"]
     output["other/batch_size"] = signal.batch_size * accel.world_size
@@ -331,6 +334,7 @@ def train_loop(state, batch, accel, lambdas):
                "discriminator": output["adv/disc_loss"],
                "unit": output["ce/unit_loss"],
                "total": output["loss"],
+               "enc_lr":output["other/e_learning_rate"],
                "gen_lr": output["other/g_learning_rate"],
                "disc_lr": output["other/d_learning_rate"],
                "multiband": output["multiband/loss"]})
@@ -434,6 +438,7 @@ def train(
     batch_size: int = 12,
     val_batch_size: int = 10,
     num_workers: int = 8,
+    update_disc_every: int = 1,
     val_idx: list = [0, 1, 2, 3, 4, 5, 6, 7],
     lambdas: dict = {
         "mel/loss": 15.0,
@@ -484,7 +489,7 @@ def train(
 
     with tracker.live:
         for tracker.step, batch in enumerate(train_dataloader, start=tracker.step):
-            train_loop(state, batch, accel, lambdas)
+            train_loop(state, batch, accel, lambdas, update_disc_every)
 
             last_iter = (
                 tracker.step == num_iters - 1 if num_iters is not None else False

@@ -15,7 +15,10 @@ Discriminator.bands:
 
 # Optimization
 AdamW.betas: [0.8, 0.99]
-AdamW.lr: 0.0001
+
+encoder/AdamW.lr:       0.0002
+generator/AdamW.lr:     0.0002
+discriminator/AdamW.lr: 0.0001
 
 ExponentialLR.gamma: 0.999998
 
@@ -27,6 +30,7 @@ save_iters: [10000, 50000, 100000, 200000, 300000, 400000, 500000, 600000, 70000
 valid_freq: 10000
 sample_freq: 10000
 num_workers: 32 #overwritten in gpu yml
+update_disc_every: 4
 val_idx: [0, 1, 2, 3, 4, 5, 6, 7]
 seed: 0
 lambdas:
