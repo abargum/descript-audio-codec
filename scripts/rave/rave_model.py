@@ -20,13 +20,13 @@ emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
 class CrossEntropyProjection(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(128)
+        self.layer_norm = torch.nn.LayerNorm(64)
         self.proj = nn.Conv1d(64, 100, 1, bias=False)
         
     def forward(self, x):
         z_for_CE = self.layer_norm(x)
         z_for_CE = self.proj(z_for_CE)
-        z_for_CE = F.interpolate(z_for_CE, 148)
+        z_for_CE = F.interpolate(z_for_CE, 74)
         return z_for_CE
 
 class RAVE(BaseModel):
@@ -113,7 +113,7 @@ class RAVE(BaseModel):
 
         with torch.no_grad():
             audio_resampled = resample(audio_data.squeeze(1), self.sample_rate, 16000)
-            target_units = torch.zeros(audio_resampled.shape[0], 148)
+            target_units = torch.zeros(audio_resampled.shape[0], 74)
             for i, sequence in enumerate(audio_resampled):
                 target_units[i, :] = self.discrete_units.units(sequence.unsqueeze(0).unsqueeze(0))
 

@@ -16,7 +16,7 @@ Discriminator.bands:
 # Optimization
 AdamW.betas: [0.8, 0.99]
 
-generator/AdamW.lr:     0.0002
+generator/AdamW.lr:     0.00012
 discriminator/AdamW.lr: 0.0001
 
 ExponentialLR.gamma: 0.999998
@@ -25,18 +25,19 @@ amp: false
 val_batch_size: 100 #overwritten in gpu yml
 device: cuda
 num_iters: 850000
-save_iters: [10000, 50000, 100000, 200000, 300000, 400000, 500000, 600000, 700000, 800000, 900000]
+save_iters: [10000, 20000, 35000, 50000, 100000, 200000, 300000, 400000, 500000, 600000, 700000, 800000, 900000]
 valid_freq: 10000
 sample_freq: 10000
 num_workers: 32 #overwritten in gpu yml
-update_disc_every: 4
+update_disc_every: 1
+warmup: 35000
 val_idx: [0, 1, 2, 3, 4, 5, 6, 7]
 seed: 0
 lambdas:
-  mel/loss: 15.0
+  mel/loss: 10.0
   adv/feat_loss: 2.0
   adv/gen_loss: 1.0
-  multiband/loss: 5.0
+  multiband/loss: 4.0
   ce/unit_loss: 1.0
 
 VolumeNorm.db: [const, -16]
@@ -65,22 +66,23 @@ MelSpectrogramLoss.mag_weight: 0.0
 # Data
 batch_size: 2 #overwritten in gpu yml
 
-train/AudioDataset.n_examples: 44242 #10000000
-train/build_dataset.duration: 2.972155 #0.3715193
+train/AudioDataset.n_examples: 160742 #10000000
+train/build_dataset.duration: 1.486078 #2.972155 #0.3715193
 train/build_dataset.folders:
   music_hq:
     - VCTK-Corpus/wav48
+    - LibriTTS/train-clean-360
 
 val/build_transform.augment_prob: 1.0
 val/AudioDataset.n_examples: 1000
-val/build_dataset.duration: 2.972155 #0.3715193
+val/build_dataset.duration: 1.486078 #2.972155 #0.3715193
 val/build_dataset.folders:
   music_hq:
     - validation-set
 
 test/build_transform.augment_prob: 1.0
 test/AudioDataset.n_examples: 1000
-test/build_dataset.duration: 2.972155 #0.3715193
+test/build_dataset.duration: 1.486078 #2.972155 #0.3715193
 #test/build_dataset.folders:
 #  music_hq:
 #   - ../musical_instrument_embedding/nsynth-test

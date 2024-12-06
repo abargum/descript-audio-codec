@@ -1,6 +1,6 @@
 $include:
   - conf/base-rave.yml
 
-batch_size: 4
-val_batch_size: 4
+batch_size: 32
+val_batch_size: 32
 num_workers: 4

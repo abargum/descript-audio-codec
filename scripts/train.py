@@ -124,6 +124,7 @@ class State:
     val_data: AudioDataset
 
     tracker: Tracker
+    warmed_up: bool
 
 
 @argbind.bind(without_prefix=True)
@@ -205,6 +206,7 @@ def load(
         tracker=tracker,
         train_data=train_data,
         val_data=val_data,
+        warmed_up=False,
     )
 
 
@@ -245,7 +247,7 @@ def get_audio(batch, state, accel):
 
 
 @timer()
-def train_loop(state, batch, accel, lambdas, update_disc_every):
+def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
     state.generator.train()
     state.discriminator.train()
     output = {}
@@ -267,7 +269,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every):
     with accel.autocast():
         output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
 
-    if state.tracker.step % update_disc_every == 0:
+    if state.warmed_up and state.tracker.step % update_disc_every == 0:
         state.optimizer_d.zero_grad()
         accel.backward(output["adv/disc_loss"])
         accel.scaler.unscale_(state.optimizer_d)
@@ -282,12 +284,9 @@ def train_loop(state, batch, accel, lambdas, update_disc_every):
         output["stft/loss"] = state.stft_loss(recons, signal)
         output["mel/loss"] = state.mel_loss(recons, signal)
         output["waveform/loss"] = state.waveform_loss(recons, signal)
-        (
-            output["adv/gen_loss"],
-            output["adv/feat_loss"],
-        ) = state.gan_loss.generator_loss(recons, signal)
-        
-        output["ce/unit_loss"] = unit_loss 
+        output["ce/unit_loss"] = unit_loss
+        if state.warmed_up:
+           (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
         output["loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
 
     # -------------------------
@@ -310,14 +309,19 @@ def train_loop(state, batch, accel, lambdas, update_disc_every):
     wandb.log({"stft": output["stft/loss"],
                "mel": output["mel/loss"],
                "waveform": output["waveform/loss"],
-               "generator": output["adv/gen_loss"],
-               "feature": output["adv/feat_loss"],
-               "discriminator": output["adv/disc_loss"],
                "unit": output["ce/unit_loss"],
                "total": output["loss"],
                "gen_lr": output["other/g_learning_rate"],
                "disc_lr": output["other/d_learning_rate"],
                "multiband": output["multiband/loss"]})
+
+    if state.warmed_up:
+       wandb.log({"generator": output["adv/gen_loss"],
+                  "feature": output["adv/feat_loss"],
+                   "discriminator": output["adv/disc_loss"]})
+
+    if state.tracker.step > warmup and not state.warmed_up:
+       state.warmed_up = True
 
     return {k: v for k, v in sorted(output.items())}
 
@@ -419,6 +423,7 @@ def train(
     val_batch_size: int = 10,
     num_workers: int = 8,
     update_disc_every: int = 1,
+    warmup: int = 50000,
     val_idx: list = [0, 1, 2, 3, 4, 5, 6, 7],
     lambdas: dict = {
         "mel/loss": 15.0,
@@ -469,7 +474,7 @@ def train(
 
     with tracker.live:
         for tracker.step, batch in enumerate(train_dataloader, start=tracker.step):
-            train_loop(state, batch, accel, lambdas, update_disc_every)
+            train_loop(state, batch, accel, lambdas, update_disc_every, warmup)
 
             last_iter = (
                 tracker.step == num_iters - 1 if num_iters is not None else False
