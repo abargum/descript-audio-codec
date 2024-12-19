@@ -17,6 +17,8 @@ from absl import flags
 import librosa
 from rave.rave_model import RAVE
 
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(parent_dir)
 import rave.blocks
 import rave.resampler
 
@@ -25,40 +27,6 @@ import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
-
-def get_random_files(folder_path, x=10):
-    """
-    Select x random audio files from each speaker's folder.
-    """
-    speaker_files = {}
-    for speaker_id in os.listdir(folder_path):
-        speaker_path = os.path.join(folder_path, speaker_id)
-        if os.path.isdir(speaker_path):
-            files = [os.path.join(speaker_path, f) for f in os.listdir(speaker_path) if f.endswith('.flac')]
-            if len(files) < x:
-                print(f"Speaker {speaker_id} has less than {x} files. Using all files.")
-                speaker_files[speaker_id] = files
-            else:
-                speaker_files[speaker_id] = random.sample(files, x)
-    return speaker_files
-
-
-def extract_speaker_emb(file_paths, speaker_encoder, pqmf):
-    embeddings = []
-    labels = []
-    for speaker_id, files in tqdm(file_paths.items(), desc="Processing Speakers"):
-        for file in files:
-            audio, sr = librosa.load(file, sr=44100)
-            emb_audio = torch.tensor(audio[:131072]).unsqueeze(0).unsqueeze(0)
-            if emb_audio.shape[-1] < 131072:
-                padding = torch.zeros(1, 1, 131072 - emb_audio.shape[-1])
-                emb_audio = torch.cat([emb_audio, padding], dim=-1)
-            audio_multiband = pqmf(emb_audio)
-            embedding = speaker_encoder(audio_multiband)
-            embeddings.append(embedding.detach().cpu().numpy())
-            labels.append(speaker_id)
-    embeddings = np.array(embeddings).reshape(-1, 256)
-    return embeddings, labels
 
 def extract_content_emb(speakers, encoder, pqmf):
     embeddings = []
@@ -146,17 +114,7 @@ def main():
     
     print("Processing content embeddings...")
     frames, labels = extract_content_emb(phrases, encoder, pqmf)
-    reduce_and_plot_tsne(frames, labels, name="images/tsne_frames.png")
+    reduce_and_plot_tsne(frames, labels, name="plots/content_frames.png")
     
-    folder_path = "../vctk-small"
-    num_files = 20
-
-    print(f"Processing speaker embeddings...")
-    random_files = get_random_files(folder_path, num_files)
-    embeddings, labels = extract_speaker_emb(random_files, speaker_encoder, pqmf)
-    reduce_and_plot_tsne(embeddings, labels, name="images/tsne_speakers.png")
-
-
-
 if __name__ == "__main__":
     main()

@@ -24,11 +24,112 @@ def normalization(module: nn.Module, mode: str = 'identity'):
     else:
         raise Exception(f'Normalization mode {mode} not supported')
 
+
 class SampleNorm(nn.Module):
 
     def forward(self, x):
         return x / torch.norm(x, 2, 1, keepdim=True)
 
+
+class ConditionalLayerNorm(nn.Module):
+    def __init__(self, embedding_dim: int, normalize_embedding: bool = True):
+        super(ConditionalLayerNorm, self).__init__()
+        self.normalize_embedding = normalize_embedding
+
+        self.linear_scale = nn.Linear(embedding_dim, 1)
+        self.linear_bias = nn.Linear(embedding_dim, 1)
+
+    def forward(self, x, embedding):
+        if self.normalize_embedding:
+            embedding = torch.nn.functional.normalize(embedding, p=2, dim=-1)
+        scale = self.linear_scale(embedding).unsqueeze(-1)  # shape: (B, 1, 1)
+        bias = self.linear_bias(embedding).unsqueeze(-1)  # shape: (B, 1, 1)
+
+        out = (x - torch.mean(x, dim=-1, keepdim=True)) / torch.var(x, dim=-1, keepdim=True)
+        out = scale * out + bias
+        return out
+
+
+class ConvGluUnit(nn.Module):
+    def __init__(
+        self,
+        channel: int,
+        kernel_size: int,
+        dilation: int,
+    ) -> None:
+        super().__init__()
+        net = [
+            nn.Dropout(),
+            normalization(
+                cc.Conv1d(channel,
+                          channel * 2,
+                          kernel_size=kernel_size,
+                          stride=1,
+                          dilation=dilation,
+                          padding=cc.get_padding(
+                              kernel_size,
+                              dilation=dilation, mode='causal'
+                          ))),
+            nn.GLU(dim=1),
+        ]
+
+        self.net = cc.CachedSequential(*net)
+        self.cumulative_delay = net[1].cumulative_delay
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class ConvGLU(nn.Module):
+    def __init__(self, channel: int, kernel_size: int, dilation: int, embedding_dim: int=192, use_cLN: bool=False):
+        super(ConvGLU, self).__init__()
+
+        self.conv_glu = Residual(
+                        ConvGluUnit(
+                            channel=channel,
+                            kernel_size=kernel_size,
+                            dilation=dilation,
+                        ))
+
+        self.use_cLN = use_cLN
+        if self.use_cLN:
+            self.norm = ConditionalLayerNorm(embedding_dim)
+
+    def forward(self, x, speaker_embedding=None):
+        y = self.conv_glu(x)
+
+        if self.use_cLN and speaker_embedding is not None:
+            y = self.norm(y, speaker_embedding)
+        return y
+
+
+class PitchPredictor(nn.Module):
+    def __init__(self, channels: int, out_channels: int, kernel_size: int, dilations: Sequence[int], embedding_dim: int=256, use_cLN: bool=True):
+        super(PitchPredictor, self).__init__()
+
+        self.length = len(dilations)
+        
+        net = []
+        for d in dilations:
+            net.append(ConvGLU(channels, kernel_size, d, embedding_dim, use_cLN))
+
+        net.append(normalization(cc.Conv1d(channels,
+                                           out_channels,
+                                           kernel_size=1,
+                                           padding=cc.get_padding(1, mode='causal'),
+                )))
+
+        self.net = cc.CachedSequential(*net)
+    
+    def forward(self, x, speaker_embedding=None):
+        for i, layer in enumerate(self.net):
+            if i < self.length:
+                x = layer(x, speaker_embedding)
+            else:
+                x = layer(x)
+                
+        return x
+        
 
 class Residual(nn.Module):
 

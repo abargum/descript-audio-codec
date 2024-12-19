@@ -15,7 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from absl import flags
 import librosa
-from rave.rave_model import RAVE
+from rave.train_rave_model import RAVE
 
 emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
 emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
@@ -46,7 +46,7 @@ class ScriptedRAVE(nn_tilde.Module):
         self.speaker = self.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
 
         self.yin = YIN(sr = self.sr, frame_time = 0.0105)
-        self.p_tracker = PitchRegisterTracker(target_mean=188.81, target_std=42.20, buffer_size=1000)
+        self.p_tracker = PitchRegisterTracker(target_mean=182.81, target_std=38.20, buffer_size=1000)
 
         self.resampler = None
 
@@ -100,6 +100,7 @@ class ScriptedRAVE(nn_tilde.Module):
         
         in_length = x.shape[-1]
         f0 = self.yin(x)
+        print(f0.shape)
 
         shifted_pitch = self.p_tracker(f0)
         shifted_pitch *= p
@@ -179,7 +180,7 @@ def main():
 
     x = torch.zeros(1, 1, 2**17).to(torch.device('cpu'))
     p = torch.zeros(1, 128).to(torch.device('cpu'))
-    y = generator.predict_no_pitch(x, x, p)
+    y = generator.predict(x, x)
     print("Shape of test output:", y.shape)
 
     """
@@ -195,11 +196,22 @@ def main():
         target_sr=sample_rate,
     )
 
+    chunk_sizes = [512, 1024, 2048]
+    for chunk in chunk_sizes:
+        t = torch.rand(1, 1, chunk)
+        
+        scripted_rave(t, torch.ones(1), torch.ones(1))
+
     # ------ FOR TEST ------
-    x, sr = librosa.load("audio/male.wav", sr=44100, mono=True)
+    #x, sr = librosa.load("audio/male.wav", sr=44100, mono=True)
+    x, sr = librosa.load("audio/audio-femme.wav", sr=44100, mono=True)
     x = torch.tensor(x[:1*131072]).unsqueeze(0).unsqueeze(0)
     chunk_size = 2048
     num_chunks = (x.shape[-1] + chunk_size - 1) // chunk_size
+
+    full_y = generator.predict(x, emb_audio)
+    full_y = full_y[0, 0, :].detach().cpu().numpy()
+    wavfile.write('audio/output/full_export_test.wav', sr, full_y)
 
     processed_chunks = []
     for i in range(num_chunks):

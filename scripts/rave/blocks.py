@@ -275,6 +275,107 @@ class EncoderV2(nn.Module):
         return x
 
 
+class GeneratorV2(nn.Module):
+
+    def __init__(
+        self,
+        data_size: int,
+        capacity: int,
+        ratios: Sequence[int],
+        latent_size: int,
+        kernel_size: int,
+        dilations: Sequence[int],
+        keep_dim: bool = False,
+        recurrent_layer: Optional[Callable[[], nn.Module]] = None,
+        amplitude_modulation: bool = False,
+        activation: Callable[[int], nn.Module] = lambda dim: nn.LeakyReLU(.2),
+        adain: Optional[Callable[[int], nn.Module]] = None,
+    ) -> None:
+        super().__init__()
+        dilations_list = normalize_dilations(dilations, ratios)[::-1]
+        ratios = ratios[::-1]
+
+        if keep_dim:
+            num_channels = np.prod(ratios) * capacity
+        else:
+            num_channels = 2**len(ratios) * capacity
+
+        net = []
+
+        if recurrent_layer is not None:
+            net.append(recurrent_layer(latent_size))
+
+        net.append(
+            normalization(
+                cc.Conv1d(
+                    latent_size,
+                    num_channels,
+                    kernel_size=kernel_size,
+                    padding=cc.get_padding(kernel_size, mode='causal'),
+                )), )
+
+        for r, dilations in zip(ratios, dilations_list):
+            # ADD UPSAMPLING UNIT
+            if keep_dim:
+                out_channels = num_channels // r
+            else:
+                out_channels = num_channels // 2
+            net.append(Snake(num_channels))
+            net.append(
+                normalization(
+                    cc.ConvTranspose1d(num_channels,
+                                       out_channels,
+                                       2 * r,
+                                       stride=r,
+                                       padding=r // 2)))
+
+            num_channels = out_channels
+
+            # ADD RESIDUAL DILATED UNITS
+            for d in dilations:
+                if adain is not None:
+                    net.append(adain(num_channels))
+                net.append(
+                    Residual(
+                        DilatedUnit(
+                            dim=num_channels,
+                            kernel_size=kernel_size,
+                            dilation=d,
+                        )))
+
+        net.append(Snake(num_channels))
+
+        waveform_module = normalization(
+            cc.Conv1d(
+                num_channels,
+                data_size * 2 if amplitude_modulation else data_size,
+                kernel_size=kernel_size * 2 + 1,
+                padding=cc.get_padding(kernel_size * 2 + 1, mode='causal'),
+            ))
+
+        net.append(waveform_module)
+
+        self.net = cc.CachedSequential(*net)
+
+        self.amplitude_modulation = amplitude_modulation
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.net(x)
+
+        noise = 0.
+
+        if self.amplitude_modulation:
+            x, amplitude = x.split(x.shape[1] // 2, 1)
+            x = x * torch.sigmoid(amplitude)
+
+        x = x + noise
+
+        return torch.tanh(x)
+
+    def set_warmed_up(self, state: bool):
+        pass
+
+
 class Snake(nn.Module):
 
     def __init__(self, dim: int) -> None:
