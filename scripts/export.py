@@ -76,6 +76,20 @@ class ScriptedRAVE(nn_tilde.Module):
         channels = ["(L)", "(R)"] if stereo else ["(mono)"]
 
         self.register_method(
+            "encode",
+            in_channels=1,
+            in_ratio=1,
+            out_channels=self.latent_size,
+            out_ratio=ratio_encode,
+            input_labels=['(signal) Channel %d'%d for d in range(1, 2)],
+            output_labels=[
+                f'(signal) Latent dimension {i + 1}'
+                for i in range(self.latent_size)
+            ],
+            test_method=False
+        )
+
+        self.register_method(
             "forward",
             in_channels=1,
             in_ratio=1,
@@ -93,6 +107,12 @@ class ScriptedRAVE(nn_tilde.Module):
 
     def pre_process_latent(self, z):
         raise NotImplementedError
+
+    @torch.jit.export
+    def encode(self, x):
+        x = self.pqmf(x)
+        z = self.encoder(x[:, :6, :])
+        return z
 
     def forward(self, inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]):
 
@@ -179,7 +199,7 @@ def main():
 
     x = torch.zeros(1, 1, 2**17).to(torch.device('cpu'))
     p = torch.zeros(1, 128).to(torch.device('cpu'))
-    y = generator.predict_no_pitch(x, x, p)
+    y = generator.predict(x, x)
     print("Shape of test output:", y.shape)
 
     """
