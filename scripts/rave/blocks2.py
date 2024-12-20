@@ -517,135 +517,55 @@ class SpeakerRAVE(nn.Module):
         return x    
 
 
-class SineGen(torch.nn.Module):
-    """Sine Wave Generator with Phase Continuity"""
-    def __init__(
-        self,
-        samp_rate,
-        harmonic_num=0,
-        sine_amp=0.1,
-        noise_std=0.003,
-        voiced_threshold=0,
-        flag_for_pulse=False,
-    ):
-        super(SineGen, self).__init__()
-        self.sine_amp = sine_amp
-        self.noise_std = noise_std
-        self.harmonic_num = harmonic_num
-        self.dim = self.harmonic_num + 1
-        self.sampling_rate = samp_rate
-        self.voiced_threshold = voiced_threshold
-        
-        self.prev_phase = None 
+class SignalGenerator(torch.nn.Module):
+    """Additive sinusoidal, subtractive filtered noise signal generator."""
 
+    def __init__(self, block_size: int, input_sample_rate: int, output_sample_rate: int):
+        """Initializer.
+        Args:
+            scale: upscaling factor.
+            sample_rate: sampling rate.
+        """
+        super().__init__()
+        self.output_sample_rate = output_sample_rate
+        self.upsampler = torch.nn.Upsample(
+            scale_factor=block_size * (output_sample_rate / input_sample_rate), mode="linear"
+        )
+
+        self.voiced_threshold = 0.0
+        self.noise_std = 0.003
+        self.sine_amp = 0.1
+
+    def forward(
+        self,
+        pitch: torch.Tensor,
+    ) -> torch.Tensor:
+        """Generate the signal.
+        Args:
+            pitch: [torch.float32; [B, N]], frame-level pitch sequence.
+        Returns:
+            [torch.float32; [B, T(=N x scale)]], base signal.
+        """
+        # [B, T]
+        uv = self.upsampler(self._f02uv(pitch)[:, None]).squeeze(dim=1)
+        pitch = self.upsampler(pitch[:, None]).squeeze(dim=1)
+
+        phase = torch.cumsum(2 * torch.pi * pitch / self.output_sample_rate, dim=-1)
+
+        x = torch.sin(phase) * self.sine_amp
+            
+        # Add noise to the sine waves
+        noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
+        noise = noise_amp * torch.randn_like(x)
+        x = x * uv + noise
+
+        return x
+    
     def _f02uv(self, f0):
         """Generate voiced/unvoiced (UV) signal"""
         uv = torch.ones_like(f0)
         uv = uv * (f0 > self.voiced_threshold)
         return uv
-
-    def forward(self, f0: torch.Tensor, upp: int):
-        """
-        Args:
-        f0: Tensor of shape (batchsize, length), fundamental frequency
-        upp: Upsampling factor
-        
-        Returns:
-        sine_waves: Generated sine waves with phase continuity
-        uv: Voiced/unvoiced tensor
-        noise: Generated noise tensor
-        """
-        with torch.no_grad():
-
-            batch_size = f0.size(0)
-            f0 = f0[:, None].transpose(1, 2)  # (batch, 1, length)
-            f0_buf = torch.zeros(f0.shape[0], f0.shape[1], self.dim, device=f0.device)
-            
-            f0_buf[:, :, 0] = f0[:, :, 0]
-            for idx in range(self.harmonic_num):
-                f0_buf[:, :, idx + 1] = f0_buf[:, :, 0] * (idx + 2)
-            
-            rad_values = (f0_buf / self.sampling_rate) * 2 * torch.pi
-            rad_values = F.interpolate(rad_values.transpose(2, 1),
-                                       scale_factor=float(upp),
-                                       mode="nearest").transpose(2, 1)
-            
-            # Initialize the phase if not already done
-            if self.prev_phase is None or self.prev_phase.size(0) != batch_size:
-                # Reset the previous phase to match the new batch size
-                self.prev_phase = torch.zeros(batch_size, f0_buf.shape[2], device=f0.device)
-            
-            phase_accum = torch.cumsum(rad_values, dim=1) + self.prev_phase.unsqueeze(1)
-            phase_accum = phase_accum % (2 * torch.pi)
-            
-            # Update the previous phase for continuity in the next forward pass
-            self.prev_phase = phase_accum[:, -1, :].clone()
-            
-            # Generate sine waves using the cumulative phase
-            sine_waves = torch.sin(phase_accum)
-            sine_waves = sine_waves * self.sine_amp
-            
-            # Generate voiced/unvoiced signal
-            uv = self._f02uv(f0) 
-            uv = F.interpolate(uv.transpose(2, 1), scale_factor=float(upp), mode="nearest").transpose(2, 1)
-            
-            # Add noise to the sine waves
-            noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
-            noise = noise_amp * torch.randn_like(sine_waves)
-            
-            # Combine sine waves and noise
-            sine_waves = sine_waves * uv + noise
-        
-        return sine_waves, uv, noise
-
-
-class SourceModuleHnNSF(torch.nn.Module):
-    """SourceModule for hn-nsf
-    SourceModule(sampling_rate, harmonic_num=0, sine_amp=0.1,
-                 add_noise_std=0.003, voiced_threshod=0)
-    sampling_rate: sampling_rate in Hz
-    harmonic_num: number of harmonic above F0 (default: 0)
-    sine_amp: amplitude of sine source signal (default: 0.1)
-    add_noise_std: std of additive Gaussian noise (default: 0.003)
-        note that amplitude of noise in unvoiced is decided
-        by sine_amp
-    voiced_threshold: threhold to set U/V given F0 (default: 0)
-    Sine_source, noise_source = SourceModuleHnNSF(F0_sampled)
-    F0_sampled (batchsize, length, 1)
-    Sine_source (batchsize, length, 1)
-    noise_source (batchsize, length 1)
-    uv (batchsize, length, 1)
-    """
-
-    def __init__(
-        self,
-        sampling_rate,
-        harmonic_num=0,
-        sine_amp=0.1,
-        add_noise_std=0.003,
-        voiced_threshod=0,
-        is_half=True,
-    ):
-        super(SourceModuleHnNSF, self).__init__()
-
-        self.sine_amp = sine_amp
-        self.noise_std = add_noise_std
-        self.is_half = is_half
-        # to produce sine waveforms
-        self.l_sin_gen = SineGen(
-            sampling_rate, harmonic_num, sine_amp, add_noise_std, voiced_threshod
-        )
-
-        # to merge source harmonics into a single excitation
-        #self.l_linear = torch.nn.Linear(harmonic_num + 1, 1)
-        self.l_tanh = torch.nn.Tanh()
-
-    def forward(self, x: torch.Tensor, upp: int = 1):
-        sine_wavs, uv, _ = self.l_sin_gen(x, upp)
-        #sine_wavs = sine_wavs.to(dtype=self.l_linear.weight.dtype)
-        #sine_merge = self.l_tanh(self.l_linear(sine_wavs))
-        sine_merge = self.l_tanh(sine_wavs)
-        return sine_merge, None, None  # noise, uv
 
 
 class AddUpDownSampling(nn.Module):
@@ -707,8 +627,7 @@ class GeneratorV2Sine(nn.Module):
         else:
             num_channels = 2**len(ratios) * capacity
 
-        self.m_source = SourceModuleHnNSF(
-            sampling_rate=sampling_rate, harmonic_num=0)
+        self.m_source = SignalGenerator(block_size=1024, input_sample_rate=sampling_rate, output_sample_rate=sampling_rate)
 
         self.conditioning_stages = [2, 6, 11, 16]
 
@@ -783,10 +702,10 @@ class GeneratorV2Sine(nn.Module):
 
         self.amplitude_modulation = amplitude_modulation
 
-    def forward(self, x: torch.Tensor, f0: torch.Tensor, upp_factor: int = 1024) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, f0: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        har_source, noi_source, uv = self.m_source(f0, upp_factor)
-        har_source = har_source.transpose(1, 2)
+        har_source = self.m_source(f0).unsquueze(1)
+        har_source = har_source.unsquueze(1)
         
         iterator = 0
 
@@ -810,3 +729,203 @@ class GeneratorV2Sine(nn.Module):
             x = x * torch.sigmoid(amplitude)
 
         return torch.tanh(x), har_source
+
+
+class ConditionalLayerNorm(nn.Module):
+    def __init__(self, embedding_dim: int, normalize_embedding: bool = True):
+        super(ConditionalLayerNorm, self).__init__()
+        self.normalize_embedding = normalize_embedding
+
+        self.linear_scale = nn.Linear(embedding_dim, 1)
+        self.linear_bias = nn.Linear(embedding_dim, 1)
+
+    def forward(self, x, embedding):
+        if self.normalize_embedding:
+            embedding = torch.nn.functional.normalize(embedding, p=2, dim=-1)
+        scale = self.linear_scale(embedding).unsqueeze(-1)  # shape: (B, 1, 1)
+        bias = self.linear_bias(embedding).unsqueeze(-1)  # shape: (B, 1, 1)
+
+        out = (x - torch.mean(x, dim=-1, keepdim=True)) / torch.var(x, dim=-1, keepdim=True)
+        out = scale * out + bias
+        return out
+
+
+class ConvGluUnit(nn.Module):
+    def __init__(
+        self,
+        channel: int,
+        kernel_size: int,
+        dilation: int,
+    ) -> None:
+        super().__init__()
+        net = [
+            nn.Dropout(),
+            normalization(
+                cc.Conv1d(channel,
+                          channel * 2,
+                          kernel_size=kernel_size,
+                          stride=1,
+                          dilation=dilation,
+                          padding=cc.get_padding(
+                              kernel_size,
+                              dilation=dilation,
+                              mode='causal'
+                          ))),
+            nn.GLU(dim=1),
+        ]
+
+        self.net = cc.CachedSequential(*net)
+        self.cumulative_delay = net[1].cumulative_delay
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class ConvGLU(nn.Module):
+    def __init__(self, channel: int, kernel_size: int, dilation: int, embedding_dim: int=192, use_cLN: bool=False):
+        super(ConvGLU, self).__init__()
+
+        self.conv_glu = Residual(
+                        ConvGluUnit(
+                            channel=channel,
+                            kernel_size=kernel_size,
+                            dilation=dilation,
+                        ))
+
+        self.use_cLN = use_cLN
+        if self.use_cLN:
+            self.norm = ConditionalLayerNorm(embedding_dim)
+
+    def forward(self, x, speaker_embedding=None):
+        y = self.conv_glu(x)
+
+        if self.use_cLN and speaker_embedding is not None:
+            y = self.norm(y, speaker_embedding)
+        return y
+
+
+class PitchPredictor(nn.Module):
+    def __init__(self, channels: int, out_channels: int, kernel_size: int, dilations: Sequence[int], embedding_dim: int=256, use_cLN: bool=True):
+        super(PitchPredictor, self).__init__()
+
+        self.length = len(dilations)
+        
+        net = []
+        for d in dilations:
+            net.append(ConvGLU(channels, kernel_size, d, embedding_dim, use_cLN))
+
+        net.append(normalization(cc.Conv1d(channels,
+                                           out_channels,
+                                           kernel_size=1,
+                                           padding=cc.get_padding(1),
+                )))
+
+        net.append(nn.ReLU())
+
+        self.net = cc.CachedSequential(*net)
+    
+    def forward(self, x, speaker_embedding=None):
+        for i, layer in enumerate(self.net):
+            if i < self.length:
+                x = layer(x, speaker_embedding)
+            else:
+                x = layer(x)
+                
+        return x
+
+
+class FiLM(torch.nn.Module):
+    def __init__(self, dim, dim_cond):
+        super().__init__()
+        self.to_cond = torch.nn.Linear(dim_cond, dim * 2)
+
+    def forward(self, x, cond):
+        gamma, beta = self.to_cond(cond).chunk(2, dim=-1)
+        return x * gamma.unsqueeze(-1) + beta.unsqueeze(-1)
+
+
+class PitchEncoderBlock(nn.Module):
+    """Residual block, 
+    """
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int):
+        """Initializer.
+        Args:
+            in_channels: size of the input channels.
+            out_channels: size of the output channels.
+            kernels: size of the convolutional kernels.
+        """
+        super().__init__()
+        net = []
+        net.append(nn.BatchNorm1d(in_channels))
+        net.append(nn.GELU())
+        
+        net.append(cc.Conv1d(in_channels,
+                      out_channels,
+                      kernel_size,
+                      padding=cc.get_padding(kernel_size, mode='causal')))
+        
+        net.append(nn.BatchNorm1d(out_channels))
+        net.append(nn.GELU())
+        net.append(cc.Conv1d(out_channels,
+                      out_channels,
+                      kernel_size,
+                      padding=cc.get_padding(kernel_size, mode='causal')))
+        
+        self.net = cc.CachedSequential(*net)
+
+        self.shortcut = cc.Conv1d(in_channels,
+                                  out_channels,
+                                  1,
+                                  padding=cc.get_padding(1, mode='causal'))
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Transform the inputs.
+        Args:
+            inputs: [torch.float32; [B, in_channels, F, N]], input channels.
+        Returns:
+            [torch.float32; [B, out_channels, F // 2, N]], output channels.
+        """
+        outputs = self.net(inputs)
+        shortcut = self.shortcut(inputs)
+        return outputs + shortcut
+    
+def exponential_sigmoid(x: torch.Tensor) -> torch.Tensor:
+    """Exponential sigmoid.
+    Args:
+        x: [torch.float32; [...]], input tensors.
+    Returns:
+        sigmoid outputs.
+    """
+    return 2.0 * torch.sigmoid(x) ** np.log(10) + 1e-7
+
+
+class PitchEncoder(nn.Module):
+    def __init__(self, in_channels: int,
+                 hidden_channels: Sequence[int],
+                 kernel_size_initial: int,
+                 kernel_size: int):
+        
+        super().__init__()
+        
+        net = []
+        net.append(cc.Conv1d(in_channels,
+                      hidden_channels[0],
+                      kernel_size_initial,
+                      padding=cc.get_padding(kernel_size_initial, mode='causal')))
+        
+        for i in range(len(hidden_channels)-1):
+            in_channels = hidden_channels[i]
+            out_channels = hidden_channels[i+1]
+            net.append(PitchEncoderBlock(in_channels, out_channels, kernel_size))
+
+        net.append(torch.nn.ReLU())
+        net.append(cc.Conv1d(out_channels, 66, 1, padding=cc.get_padding(1, mode='causal')))
+    
+        self.net = cc.CachedSequential(*net)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        zp = self.net(inputs)
+        f0 = torch.softmax(zp[:, :64, :], dim=-1)
+        ap = exponential_sigmoid(zp[:, -2, :])
+        aap = exponential_sigmoid(zp[:, -1, :])
+        return f0, ap, aap

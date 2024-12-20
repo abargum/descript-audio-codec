@@ -260,6 +260,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
         unit_loss = out["unit_loss"]
+        pitch_loss = out["pitch_loss"]
 
         x_multiband = AudioSignal(rearrange(out["x_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
         y_multiband = AudioSignal(rearrange(out["y_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
@@ -284,6 +285,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         output["gen/mel"] = state.mel_loss(recons, signal)
         output["gen/waveform"] = state.waveform_loss(recons, signal)
         output["gen/unit"] = unit_loss
+        output["gen/pitch"] = pitch_loss
         if state.warmed_up:
            (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
         output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
@@ -415,6 +417,7 @@ def train(
           "gen/mel": 12.0,
           "gen/multiband": 3.0,
           "gen/unit": 1.0,
+          "gen/pitch": 0.5,
           "adv/feat_loss": 2.0,
           "adv/gen_loss": 1.0,
     },

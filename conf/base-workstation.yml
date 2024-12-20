@@ -16,8 +16,8 @@ Discriminator.bands:
 # Optimization
 AdamW.betas: [0.8, 0.99]
 
-generator/AdamW.lr:     0.0002
-discriminator/AdamW.lr: 0.0002
+generator/AdamW.lr:     0.0001
+discriminator/AdamW.lr: 0.0001
 
 ExponentialLR.gamma: 0.999998
 
@@ -25,18 +25,19 @@ amp: false
 val_batch_size: 100 #overwritten in gpu yml
 device: cuda
 num_iters: 850000
-save_iters: [10000, 20000, 35000, 50000, 100000, 200000, 300000, 400000, 500000, 600000, 700000, 800000, 900000]
+save_iters: [2000, 20000, 35000, 50000, 100000, 200000, 300000, 400000, 500000, 600000, 700000, 800000, 900000]
 valid_freq: 20000
 sample_freq: 10000
 num_workers: 32 #overwritten in gpu yml
 update_disc_every: 1
-warmup: 60000
+warmup: 100000
 val_idx: [0, 1, 2, 3, 4, 5, 6, 7]
 seed: 0
 lambdas:
   gen/mel: 12.0
   gen/multiband: 2.0
   gen/unit: 1.0
+  gen/pitch: 1.0
   adv/feat_loss: 2.0
   adv/gen_loss: 1.0
 

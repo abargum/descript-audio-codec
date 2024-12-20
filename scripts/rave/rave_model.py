@@ -1,18 +1,19 @@
 from .pitch import get_f0_fcpe, extract_f0_mean_std
 from .blocks import GeneratorV2Sine
-from .blocks2 import SpeakerRAVE, EncoderV2
+from .blocks2 import SpeakerRAVE, EncoderV2, PitchEncoder
 from .pqmf import CachedPQMF as PQMF
 from .augmentations import ComposeTransforms, AddNoise, PitchAug
 
 import gin
 import numpy as np
 import torch
+import librosa
 import torch.nn as nn
 from torchaudio.functional import resample
 import torch.nn.functional as F
 from audiotools.ml import BaseModel
 
-import librosa
+from .data import Preprocessor
 
 emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
 emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
@@ -35,6 +36,7 @@ class RAVE(BaseModel):
         self,
         latent_size = 64,
         capacity = 64,
+        speaker_dim = 256,
         sampling_rate = 44100,
         valid_signal_crop = True):
         super().__init__()
@@ -55,7 +57,7 @@ class RAVE(BaseModel):
         self.decoder = GeneratorV2Sine(data_size = 16,
                                        capacity = capacity,
                                        ratios = [4, 4, 2, 2],
-                                       latent_size = latent_size + 256,
+                                       latent_size = latent_size + speaker_dim,
                                        kernel_size = 3,
                                        sampling_rate = sampling_rate,
                                        dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]]
@@ -72,6 +74,7 @@ class RAVE(BaseModel):
 
         self.discrete_units.eval()
 
+
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
 
@@ -79,6 +82,23 @@ class RAVE(BaseModel):
         probabilities = {"noise": 0.5, "shift": 1.0}
 
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
+
+        #FOR PITCH TRAINING
+        self.pitch_f0_bins = 64
+        self.pitch_bins = torch.linspace(np.log(50), np.log(1000), self.pitch_f0_bins, device='cuda:0').exp()
+        self.cqt_shift_min = -12
+        self.cqt_shift_max = 12
+        self.pitch_freq = 160
+        self.cqt_bins = 191
+        self.cqt_center = (self.cqt_bins - self.pitch_freq) // 2
+
+        hcqt_params = {'harmonics': [1], 'fmin': 32.7, 'fmax': None, 'bins_per_semitone': 2, 'n_bins': self.cqt_bins, 'center_bins': True, 'gamma': 5, 'streaming': False}
+        self.QCT = Preprocessor(hop_size=23.25, sampling_rate=44100, **hcqt_params)
+
+        self.p_enc = PitchEncoder(in_channels=self.pitch_freq,
+                                  hidden_channels=[128, 256, 512],
+                                  kernel_size_initial=7,
+                                  kernel_size=3)
 
     def load_speaker_statedict(self, path):
         loaded_state = torch.load(path, map_location="cuda:%d" % 0)
@@ -107,6 +127,23 @@ class RAVE(BaseModel):
                 audio_data: torch.Tensor,
                 sample_rate: int = None):
 
+        cqt = self.QCT(audio_data)
+        cqt = cqt.squeeze(2)
+
+        cqt_crop = cqt[:, :, self.cqt_center:self.cqt_center + self.pitch_freq]
+        p_out_1, ap_1, aap_1 = self.p_enc(cqt_crop.transpose(2,1))
+
+        bsize = audio_data.shape[0]
+        dist = torch.randint(self.cqt_shift_min, self.cqt_shift_max + 1, (bsize,), device='cuda:0')
+        start = dist + self.cqt_center
+        cqt_crop_shifted = torch.stack([cqt_[:, i:i + self.pitch_freq] for cqt_, i in zip(cqt, start)], dim=0)
+        p_out_2, ap_2, aap_2 = self.p_enc(cqt_crop_shifted.transpose(2,1))
+
+        p_out_1 = (p_out_1.transpose(2,1) * self.pitch_bins).sum(dim=-1)
+        p_out_2 = (p_out_2.transpose(2,1) * self.pitch_bins).sum(dim=-1)
+
+        ##########################
+
         audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
         
         length = audio_data.shape[-1]
@@ -118,26 +155,32 @@ class RAVE(BaseModel):
                 target_units[i, :] = self.discrete_units.units(sequence.unsqueeze(0).unsqueeze(0))
 
         f0 = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
-        f0 = f0[:, :, 0]
 
         audio_multiband = self.pqmf(audio_data)
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
         z = self.encoder(audio_multiband_aug[:, :6, :])
+
 
         projected_z = self.ce_projection(z)
         ce_loss = torch.nn.functional.cross_entropy(projected_z,
                                                     target_units.type(torch.int64).to(audio_data.device))
        
         with torch.no_grad():
-            emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z.shape[-1])
+            emb = self.speaker_encoder(audio_multiband)
+        
+        emb = emb.unsqueeze(-1).repeat(1, 1, z.shape[-1])
 
-        y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb), dim=1), f0)
+        y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb), dim=1), p_out_1)
         y = self.pqmf.inverse(y_multiband)
+
+        pitch_loss = F.huber_loss(p_out_2.log2() + 0.5 * dist[:, None], p_out_1.log2(), delta=1.0)
+        #pitch_loss2 = torch.nn.functional.mse_loss(p_out_1, f0.squeeze(-1))
+        #print(pitch_loss1, pitch_loss2)
         
         return {
             "audio": y[..., :length],
             "unit_loss": ce_loss,
+            "pitch_loss": pitch_loss,
             "p_audio": audio_aug.unsqueeze(1),
             "x_multiband": audio_multiband,
             "y_multiband": y_multiband,
@@ -203,3 +246,13 @@ class RAVE(BaseModel):
         y = self.pqmf.inverse(y_multiband)
         
         return y[..., :length]
+
+    def get_pitch(self, audio_data: torch.Tensor):
+        cqt = self.QCT(audio_data)
+        cqt = cqt.squeeze(2)
+
+        cqt_crop = cqt[:, :, self.cqt_center:self.cqt_center + self.pitch_freq]
+        p_out_1, ap_1, aap_1 = self.p_enc(cqt_crop.transpose(2,1))
+
+        p_out_1 = (p_out_1.transpose(2,1) * self.pitch_bins.to(p_out_1.device)).sum(dim=-1)
+        return p_out_1
