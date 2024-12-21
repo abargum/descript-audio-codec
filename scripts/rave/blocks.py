@@ -583,3 +583,198 @@ class GeneratorV2Sine(nn.Module):
             x = x * torch.sigmoid(amplitude)
 
         return torch.tanh(x), har_source
+
+
+
+
+
+class GeneratorV2(nn.Module):
+
+    def __init__(
+        self,
+        capacity: int,
+        ratios: Sequence[int],
+        latent_size: int,
+        kernel_size: int,
+        dilations: Sequence[int],
+        keep_dim: bool = False,
+        data_size: Union[int, None] = None,
+        recurrent_layer: Optional[Callable[[], nn.Module]] = None,
+        n_channels: int = 1,
+        amplitude_modulation: bool = False,
+        activation: Callable[[int], nn.Module] = lambda dim: nn.LeakyReLU(.2),
+        adain: Optional[Callable[[int], nn.Module]] = None,
+    ) -> None:
+        super().__init__()
+        if data_size is None:
+            data_size = n_channels
+        else:
+            data_size = data_size * n_channels 
+        dilations_list = normalize_dilations(dilations, ratios)[::-1]
+        ratios = ratios[::-1]
+
+        if keep_dim:
+            num_channels = np.prod(ratios) * capacity
+        else:
+            num_channels = 2**len(ratios) * capacity
+
+        self.conditioning_stages = [2, 6, 11, 16]
+
+        net = []
+        net_pitch = []
+
+        if recurrent_layer is not None:
+            net.append(recurrent_layer(latent_size))
+
+        net.append(
+            normalization(
+                cc.Conv1d(
+                    latent_size,
+                    num_channels,
+                    kernel_size=kernel_size,
+                    padding=cc.get_padding(kernel_size),
+                )), )
+
+        net_pitch.append(
+            normalization(
+                cc.Conv1d(
+                    1,
+                    num_channels,
+                    kernel_size=kernel_size,
+                    padding=cc.get_padding(kernel_size),
+                )), )
+
+        for r, dilations in zip(ratios, dilations_list):
+            # ADD UPSAMPLING UNIT
+            if keep_dim:
+                out_channels = num_channels // r
+            else:
+                out_channels = num_channels // 2
+            net.append(activation(num_channels))
+            net_pitch.append(activation(num_channels))
+            
+            net.append(
+                normalization(
+                    cc.ConvTranspose1d(num_channels,
+                                       out_channels,
+                                       2 * r,
+                                       stride=r,
+                                       padding=r // 2)))
+            net_pitch.append(
+                normalization(
+                    cc.ConvTranspose1d(num_channels,
+                                       out_channels,
+                                       2 * r,
+                                       stride=r,
+                                       padding=r // 2)))
+
+            num_channels = out_channels
+
+            # ADD RESIDUAL DILATED UNITS
+            for d in dilations:
+                if adain is not None:
+                    net.append(adain(num_channels))
+                net.append(
+                    Residual(
+                        DilatedUnit(
+                            dim=num_channels,
+                            kernel_size=kernel_size,
+                            dilation=d,
+                        )))
+
+                net_pitch.append(
+                    Residual(
+                        DilatedUnit(
+                            dim=num_channels,
+                            kernel_size=kernel_size,
+                            dilation=d,
+                        )))
+
+                #net_pitch.append(nn.Identity())
+
+        net.append(activation(num_channels))
+        net_pitch.append(activation(num_channels))
+
+        waveform_module = normalization(
+            cc.Conv1d(
+                num_channels,
+                data_size * 2 if amplitude_modulation else data_size,
+                kernel_size=kernel_size * 2 + 1,
+                padding=cc.get_padding(kernel_size * 2 + 1),
+            ))
+
+    
+        net.append(waveform_module)
+        net_pitch.append(waveform_module)
+        
+        self.net = cc.CachedSequential(*net)
+        self.net_pitch = cc.CachedSequential(*net_pitch)
+        self.amplitude_modulation = amplitude_modulation
+
+    def forward(self, x: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
+
+        for i, (layer_x, layer_p) in enumerate(zip(self.net, self.net_pitch)):
+            x = layer_x(x)
+            p = layer_p(p)
+            if i in self.conditioning_stages:
+                x = x + p
+
+        noise = 0.
+
+        if self.amplitude_modulation:
+            x, amplitude = x.split(x.shape[1] // 2, 1)
+            x = x * torch.sigmoid(amplitude)
+
+        x = x + noise
+
+        return torch.tanh(x), torch.tanh(p)
+
+    def set_warmed_up(self, state: bool):
+        pass
+
+
+class SignalGenerator(torch.nn.Module):
+    """Additive sinusoidal, subtractive filtered noise signal generator."""
+
+    def __init__(self, block_size: int, input_sample_rate: int, output_sample_rate: int):
+        """Initializer.
+        Args:
+            scale: upscaling factor.
+            sample_rate: sampling rate.
+        """
+        super().__init__()
+        self.output_sample_rate = output_sample_rate
+        self.upsampler = torch.nn.Upsample(
+            scale_factor=block_size * (output_sample_rate / input_sample_rate), mode="linear"
+        )
+
+        self.voiced_threshold = 0.0
+
+    def forward(
+        self,
+        pitch: torch.Tensor,
+    ) -> torch.Tensor:
+        """Generate the signal.
+        Args:
+            pitch: [torch.float32; [B, N]], frame-level pitch sequence.
+            p_amp: [torch.float32; [B, N]], periodic amplitude.
+            ap_amp: [torch.float32; [B, N]], aperiodic amplitude.
+            noise: [torch.float32; [B, T]], predefined noise, if provided.
+        Returns:
+            [torch.float32; [B, T(=N x scale)]], base signal.
+        """
+
+        uv = self.upsampler(self._f02uv(pitch)[:, None]).squeeze(dim=1)
+        pitch = self.upsampler(pitch[:, None]).squeeze(dim=1)
+
+        phase = torch.cumsum(2 * torch.pi * pitch / self.output_sample_rate, dim=-1)
+        x = torch.sin(phase)
+        noise = torch.rand_like(x) * 2.0 - 1.0
+  
+        return (x + noise * 0.25) * uv
+    
+    def _f02uv(self, f0):
+        """Generate voiced/unvoiced (UV) signal"""
+        uv = torch.ones_like(f0)
+        uv = uv * (f0 > self.voiced_threshold)
+        return uv

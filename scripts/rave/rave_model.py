@@ -1,5 +1,5 @@
 from .pitch import get_f0_fcpe, extract_f0_mean_std
-from .blocks import GeneratorV2Sine
+from .blocks import GeneratorV2Sine, GeneratorV2, SignalGenerator
 from .blocks2 import SpeakerRAVE, EncoderV2
 from .pqmf import CachedPQMF as PQMF
 from .augmentations import ComposeTransforms, AddNoise, PitchAug
@@ -13,6 +13,8 @@ import torch.nn.functional as F
 from audiotools.ml import BaseModel
 
 import librosa
+
+sine_target_generator = SignalGenerator(1024, 44100, 44100)
 
 emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
 emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
@@ -52,12 +54,11 @@ class RAVE(BaseModel):
                                  dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]]
         )
 
-        self.decoder = GeneratorV2Sine(data_size = 16,
+        self.decoder = GeneratorV2(data_size = 16,
                                        capacity = capacity,
                                        ratios = [4, 4, 2, 2],
                                        latent_size = latent_size + 256,
                                        kernel_size = 3,
-                                       sampling_rate = sampling_rate,
                                        dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]]
         )
 
@@ -117,8 +118,7 @@ class RAVE(BaseModel):
             for i, sequence in enumerate(audio_resampled):
                 target_units[i, :] = self.discrete_units.units(sequence.unsqueeze(0).unsqueeze(0))
 
-        f0 = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
-        f0 = f0[:, :, 0]
+        f0 = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024).transpose(2,1)
 
         audio_multiband = self.pqmf(audio_data)
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
@@ -132,15 +132,21 @@ class RAVE(BaseModel):
             emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
 
-        y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb), dim=1), f0)
+        y_multiband, pitch_multiband = self.decoder(torch.cat((z.detach(), emb), dim=1), f0)
+
+        pitch = self.pqmf.inverse(pitch_multiband)
         y = self.pqmf.inverse(y_multiband)
+
+        sine_target = sine_target_generator(f0.squeeze(1))
         
         return {
             "audio": y[..., :length],
-            "ce/unit_loss": ce_loss,
+            "pitch_audio": pitch[..., :length],
+            "unit_loss": ce_loss,
             "p_audio": audio_aug.unsqueeze(1),
             "x_multiband": audio_multiband,
             "y_multiband": y_multiband,
+            "sine_target": sine_target
         }
 
     def predict(self, audio_data: torch.Tensor, target: torch.Tensor):
