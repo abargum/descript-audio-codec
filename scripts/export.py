@@ -15,16 +15,34 @@ import torch.nn as nn
 import torch.nn.functional as F
 from absl import flags
 import librosa
+import pickle
 from rave.rave_model import RAVE
-
-emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
-emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
+from utils.utils import load_dict_from_txt
 
 import rave.blocks
 import rave.resampler
 
 from rave.yin import YIN
-from rave.pitchTracker import PitchRegisterTracker
+from rave.torchyin import get_pitch
+from rave.pitchTracker import PitchRegisterTracker, PitchRegisterTracker2
+
+emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
+emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
+
+# Load speaker data
+file = 'scripts/utils/speaker-info.txt'
+info_dict = load_dict_from_txt(file)
+
+file_path = 'scripts/utils/speaker_emb_dict.pkl'
+with open(file_path, 'rb') as file:
+    speaker_dict = pickle.load(file)
+
+target = 'p228'
+target_stats = speaker_dict[target]
+target_emb = target_stats['avg_emb']
+target_emb = torch.tensor(target_emb).unsqueeze(0).unsqueeze(-1)
+target_f0_mean = target_stats['f0_mean'] - 10
+taget_f0_std = target_stats['f0_std'] - 10
 
 class ScriptedRAVE(nn_tilde.Module):
 
@@ -43,10 +61,10 @@ class ScriptedRAVE(nn_tilde.Module):
         
         self.speaker_encoder = pretrained.speaker_encoder
         emb_audio_pqmf = self.pqmf(emb_audio)
-        self.speaker = self.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
+        self.speaker = target_emb #self.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
 
-        self.yin = YIN(sr = self.sr, frame_time = 0.0105)
-        self.p_tracker = PitchRegisterTracker(target_mean=188.81, target_std=42.20, buffer_size=1000)
+        self.yin = YIN(sr = self.sr, frame_time = 0.012)
+        self.p_tracker = PitchRegisterTracker2(target_mean=188.81, target_std=39.20)
 
         self.resampler = None
 
@@ -119,7 +137,7 @@ class ScriptedRAVE(nn_tilde.Module):
         x, p, s = inputs
         
         in_length = x.shape[-1]
-        f0 = self.yin(x)
+        f0 = get_pitch(x, block_size=1025) #self.yin(x)
 
         shifted_pitch = self.p_tracker(f0)
         shifted_pitch *= p

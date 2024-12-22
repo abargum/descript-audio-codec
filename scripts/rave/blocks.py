@@ -423,7 +423,7 @@ class SourceModuleHnNSF(torch.nn.Module):
 
 class AddUpDownSampling(nn.Module):
 
-    def __init__(self, channels, kernel_size, net_delay):
+    def __init__(self, channels, kernel_size, net_delay, add_delay=True):
         super().__init__()
         
         self.ex_conv = cc.Conv1d(1,
@@ -433,7 +433,10 @@ class AddUpDownSampling(nn.Module):
                                  padding=cc.get_padding(kernel_size * 2, mode='causal'))
 
         sine_delay = self.ex_conv.cumulative_delay
-        delays = [net_delay, sine_delay]
+        if add_delay:
+            delays = [net_delay, sine_delay] 
+        else:
+            delays = [0, 0]
 
         max_delay = max(delays)
 
@@ -549,10 +552,17 @@ class GeneratorV2Sine(nn.Module):
 
         self.conditioning_layers = nn.ModuleList()
         
+        add_delay = True
         for i, stage in enumerate(self.conditioning_stages):
+            if i % 2 == 0:
+                add_delay = True
+            else:
+                add_delay = False
+
             self.conditioning_layers.append(AddUpDownSampling(downsampling_channels[i],
                                                               sine_conv_kernels[i],
-                                                              self.net[stage].cumulative_delay))
+                                                              self.net[stage].cumulative_delay,
+                                                              add_delay=add_delay))
 
         self.amplitude_modulation = amplitude_modulation
 

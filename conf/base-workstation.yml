@@ -15,12 +15,11 @@ Discriminator.bands:
 
 # Optimization
 AdamW_G.betas: [0.8, 0.99]
-AdamW_G.lr: 0.0001
 
-AdamW_D.betas: [0.8, 0.99]
-AdamW_D.lr: 0.0001
+generator/AdamW.lr:     0.0002
+discriminator/AdamW.lr: 0.0002
 
-ExponentialLR.gamma: 0.999996
+ExponentialLR.gamma: 0.999998
 
 amp: false
 val_batch_size: 100 #overwritten in gpu yml
@@ -33,10 +32,11 @@ num_workers: 32 #overwritten in gpu yml
 val_idx: [0, 1, 2, 3, 4, 5, 6, 7]
 seed: 0
 lambdas:
-  mel/loss: 15.0
+  gen/mel: 12.0
+  gen/multiband: 3.0
+  gen/unit: 1.0
   adv/feat_loss: 2.0
   adv/gen_loss: 1.0
-  multiband/loss: 5.0
 
 VolumeNorm.db: [const, -16]
 
@@ -47,9 +47,10 @@ build_transform.augment_prob: 0.0
 build_transform.augment:
   - Identity
 build_transform.postprocess:
-  - VolumeNorm
-  - RescaleAudio
-  - ShiftPhase
+  #- VolumeNorm
+  #- RescaleAudio
+  #- ShiftPhase
+  - Identity
 
 # Loss setup
 MultiScaleSTFTLoss.window_lengths: [512]
@@ -65,21 +66,21 @@ MelSpectrogramLoss.mag_weight: 0.0
 batch_size: 2 #overwritten in gpu yml
 
 train/AudioDataset.n_examples: 10000000
-train/build_dataset.duration: 0.3715193
+train/build_dataset.duration: 1.486078
 train/build_dataset.folders:
   music_hq:
     - ../vctk-small
 
 val/build_transform.augment_prob: 1.0
-val/AudioDataset.n_examples: 100
-val/build_dataset.duration: 0.3715193
+val/AudioDataset.n_examples: 12
+val/build_dataset.duration: 1.486078
 val/build_dataset.folders:
   music_hq:
-    - ../valid-vctk
+    - val-set-test
 
 test/build_transform.augment_prob: 1.0
 test/AudioDataset.n_examples: 100
-test/build_dataset.duration: 0.3715193
+test/build_dataset.duration: 1.486078
 test/build_dataset.folders:
   music_hq:
     - ../test-vctk

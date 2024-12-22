@@ -1,4 +1,6 @@
 import torch
+from typing import Optional
+
 
 class PitchRegisterTracker(torch.nn.Module):
     def __init__(self, target_mean: float, target_std: float, buffer_size: int = 1000):
@@ -84,3 +86,40 @@ class PitchRegisterTracker(torch.nn.Module):
         self.buffer_idx = 0
         self.source_log_mean = 0.0
         self.source_log_std = 1.0
+
+
+class PitchRegisterTracker2(torch.nn.Module):
+    def __init__(self, target_mean: float, target_std: float):
+        super().__init__()
+        
+        # Register all stateful values as buffers to make them TorchScript compatible
+        self.register_buffer("target_mean", torch.tensor(target_mean, dtype=torch.float32))
+        self.register_buffer("target_std", torch.tensor(target_std, dtype=torch.float32))
+        self.register_buffer("in_mean", torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer("in_var", torch.tensor(0.0, dtype=torch.float32))
+        self.register_buffer("alpha", torch.tensor(0.3, dtype=torch.float32))
+    
+    @torch.jit.export
+    def forward(self, input_pitch: torch.Tensor) -> torch.Tensor:
+        # Convert all operations to use tensors directly
+        pitch_mean = input_pitch.mean()
+        
+        # Update running mean
+        self.in_mean.copy_((self.alpha * pitch_mean + 
+                           (1.0 - self.alpha) * self.in_mean))
+        
+        # Calculate variance
+        squared_diff = (input_pitch - self.in_mean) ** 2
+        batch_var = squared_diff.mean()
+        self.in_var.copy_((self.alpha * batch_var + 
+                          (1.0 - self.alpha) * self.in_var))
+        
+        # Calculate standard deviation with numerical stability
+        in_std = torch.sqrt(self.in_var)
+        in_std = torch.clamp(in_std, min=1e-7)
+        
+        # Standardize and scale
+        standardized_source_pitch = (input_pitch - self.in_mean) / in_std
+        source_pitch = standardized_source_pitch * self.target_std + self.target_mean
+        
+        return source_pitch

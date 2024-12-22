@@ -6,6 +6,9 @@ from pathlib import Path
 
 import argbind
 import torch
+import math
+import numpy as np
+import librosa
 from audiotools import AudioSignal
 from audiotools import ml
 from audiotools.core import util
@@ -22,6 +25,13 @@ import dac
 from rave.rave_model import RAVE
 import wandb
 from einops import rearrange
+from torchaudio.functional import resample
+import pickle
+from custom_dataset import CustomAudioDataset
+
+file_path = 'metadata.pkl'
+with open(file_path, 'rb') as file:
+    unit_dict = pickle.load(file)
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -96,7 +106,7 @@ def build_dataset(
     for _, v in folders.items():
         loader = AudioLoader(sources=v)
         transform = build_transform()
-        dataset = AudioDataset(loader, sample_rate, duration=duration, transform=transform)
+        dataset = AudioDataset(loader, sample_rate, duration=duration, offset=1.0, transform=transform)
         datasets.append(dataset)
 
     dataset = ConcatDataset(datasets)
@@ -237,14 +247,27 @@ def get_audio(batch, state, accel):
         batch["signal"].clone(), **batch["transform_args"]
     )
 
-    out = state.generator(signal.audio_data, signal.sample_rate)
+    out = state.generator.get_val_audio(signal.audio_data)
     recons = AudioSignal(out["audio"], signal.sample_rate)
-    shifted = AudioSignal(out["p_audio"], signal.sample_rate)
-
     inp = AudioSignal(signal.audio_data, signal.sample_rate)
 
-    return inp, recons, shifted, signal.sample_rate
+    return inp, recons, signal.sample_rate
 
+def get_units(batch):
+    b, n, t = batch["signal"].shape
+    
+    #unit_length = (t / sr * 16000) // 320
+    unit_length = 74
+    target_units = torch.zeros(b, unit_length)
+
+    for i, p in enumerate(batch["path"]):
+        offset = batch["signal"].metadata["offset"][i]
+        unit = unit_dict[p]['units']
+        start = int(np.round((16000 * offset) / 320))
+        units = unit[start:start+unit_length].unsqueeze(0)
+        target_units[i, :] = units
+    
+    return target_units
 
 @timer()
 def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
@@ -258,13 +281,17 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
             batch["signal"].clone(), **batch["transform_args"]
         )
 
+        target_units = get_units(batch)
+
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
-        unit_loss = out["ce/unit_loss"]
+        projected_z = out["projected_z"]
 
         x_multiband = AudioSignal(rearrange(out["x_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
         y_multiband = AudioSignal(rearrange(out["y_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
+
+        unit_loss = torch.nn.functional.cross_entropy(projected_z, target_units.type(torch.int64).to(recons.device))
 
     with accel.autocast():
         output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
@@ -280,19 +307,19 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         state.scheduler_d.step()
 
     with accel.autocast():
-        output["multiband/loss"] = state.stft_loss(y_multiband, x_multiband)
-        output["stft/loss"] = state.stft_loss(recons, signal)
-        output["mel/loss"] = state.mel_loss(recons, signal)
-        output["waveform/loss"] = state.waveform_loss(recons, signal)
-        output["ce/unit_loss"] = unit_loss
+        output["gen/multiband"] = state.stft_loss(y_multiband, x_multiband)
+        output["gen/stft"] = state.stft_loss(recons, signal)
+        output["gen/mel"] = state.mel_loss(recons, signal)
+        output["gen/waveform"] = state.waveform_loss(recons, signal)
+        output["gen/unit"] = unit_loss
         if state.warmed_up:
            (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
-        output["loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
+        output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
 
     # -------------------------
     if state.tracker.step % update_disc_every != 0 or update_disc_every == 1:
        state.optimizer_g.zero_grad()
-       accel.backward(output["loss"])
+       accel.backward(output["gen/total_loss"])
        accel.scaler.unscale_(state.optimizer_g)
        output["other/grad_norm"] = torch.nn.utils.clip_grad_norm_(
            state.generator.parameters(), 1e3
@@ -306,19 +333,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
     output["other/d_learning_rate"] = state.optimizer_d.param_groups[0]["lr"]
     output["other/batch_size"] = signal.batch_size * accel.world_size
 
-    wandb.log({"stft": output["stft/loss"],
-               "mel": output["mel/loss"],
-               "waveform": output["waveform/loss"],
-               "unit": output["ce/unit_loss"],
-               "total": output["loss"],
-               "gen_lr": output["other/g_learning_rate"],
-               "disc_lr": output["other/d_learning_rate"],
-               "multiband": output["multiband/loss"]})
-
-    if state.warmed_up:
-       wandb.log({"generator": output["adv/gen_loss"],
-                  "feature": output["adv/feat_loss"],
-                   "discriminator": output["adv/disc_loss"]})
+    wandb.log({"loss": output})
 
     if state.tracker.step > warmup and not state.warmed_up:
        state.warmed_up = True
@@ -387,12 +402,11 @@ def validate(state, val_dataloader, accel):
         output = val_loop(batch, state, accel)
         last_batch = batch
 
-    inp, recon, shifted, sr = get_audio(last_batch, state, accel)
+    inp, recon, sr = get_audio(last_batch, state, accel)
     inp = inp.audio_data.float()
     recon = recon.audio_data.float()
-    shifted = shifted.audio_data.float()
 
-    audio = torch.cat([shifted, inp, recon], -1)
+    audio = torch.cat([inp, recon], -1)
     audio = list(map(lambda x: x.cpu(), audio))
     audio_to_export = torch.cat(audio, 0)[:8].reshape(-1).numpy()
 
@@ -426,9 +440,11 @@ def train(
     warmup: int = 50000,
     val_idx: list = [0, 1, 2, 3, 4, 5, 6, 7],
     lambdas: dict = {
-        "mel/loss": 15.0,
-        "adv/feat_loss": 2.0,
-        "adv/gen_loss": 1.0,
+          "gen/mel": 12.0,
+          "gen/multiband": 3.0,
+          "gen/unit": 1.0,
+          "adv/feat_loss": 2.0,
+          "adv/gen_loss": 1.0,
     },
 ):
     util.seed(seed)
@@ -446,7 +462,7 @@ def train(
         start_idx=state.tracker.step * batch_size,
         num_workers=num_workers,
         batch_size=batch_size,
-        collate_fn=state.train_data.collate,
+        collate_fn= CustomAudioDataset.collate #state.train_data.collate,
     )
     train_dataloader = get_infinite_loader(train_dataloader)
     val_dataloader = accel.prepare_dataloader(
@@ -454,7 +470,7 @@ def train(
         start_idx=0,
         num_workers=num_workers,
         batch_size=val_batch_size,
-        collate_fn=state.val_data.collate,
+        collate_fn=CustomAudioDataset.collate, #state.val_data.collate,
         persistent_workers=True if num_workers > 0 else False,
     )
 

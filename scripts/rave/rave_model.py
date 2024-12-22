@@ -8,7 +8,6 @@ import gin
 import numpy as np
 import torch
 import torch.nn as nn
-from torchaudio.functional import resample
 import torch.nn.functional as F
 from audiotools.ml import BaseModel
 
@@ -67,10 +66,6 @@ class RAVE(BaseModel):
         self.speaker_encoder.eval()
 
         self.ce_projection = CrossEntropyProjection()
-        self.discrete_units = torch.hub.load("bshall/hubert:main",f"hubert_discrete",
-                                             trust_repo=True).to(torch.device("cuda:0"))
-
-        self.discrete_units.eval()
 
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
@@ -111,12 +106,6 @@ class RAVE(BaseModel):
         
         length = audio_data.shape[-1]
 
-        with torch.no_grad():
-            audio_resampled = resample(audio_data.squeeze(1), self.sample_rate, 16000)
-            target_units = torch.zeros(audio_resampled.shape[0], 74)
-            for i, sequence in enumerate(audio_resampled):
-                target_units[i, :] = self.discrete_units.units(sequence.unsqueeze(0).unsqueeze(0))
-
         f0 = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
         f0 = f0[:, :, 0]
 
@@ -125,8 +114,6 @@ class RAVE(BaseModel):
         z = self.encoder(audio_multiband_aug[:, :6, :])
 
         projected_z = self.ce_projection(z)
-        ce_loss = torch.nn.functional.cross_entropy(projected_z,
-                                                    target_units.type(torch.int64).to(audio_data.device))
        
         with torch.no_grad():
             emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
@@ -137,11 +124,30 @@ class RAVE(BaseModel):
         
         return {
             "audio": y[..., :length],
-            "ce/unit_loss": ce_loss,
+            "projected_z": projected_z,
             "p_audio": audio_aug.unsqueeze(1),
             "x_multiband": audio_multiband,
             "y_multiband": y_multiband,
         }
+
+    def get_val_audio(self, audio_data: torch.Tensor):
+        
+        length = audio_data.shape[-1]
+
+        f0 = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
+        f0 = f0[:, :, 0]
+
+        audio_multiband = self.pqmf(audio_data)
+        z = self.encoder(audio_multiband[:, :6, :])
+       
+        with torch.no_grad():
+            emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
+        emb = emb.repeat(1, 1, z.shape[-1])
+
+        y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb), dim=1), f0)
+        y = self.pqmf.inverse(y_multiband)
+        
+        return {"audio": y[..., :length]}
 
     def predict(self, audio_data: torch.Tensor, target: torch.Tensor):
 
