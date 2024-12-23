@@ -1,9 +1,11 @@
 import math, random
+from typing import Dict
 
 import torch
+import julius
 import torch.nn as nn
 from torch_pitch_shift import pitch_shift, semitones_to_ratio, get_fast_shifts
-from typing import Dict
+import torchaudio.functional as F
 
 def calculate_rms(samples):
     """
@@ -51,7 +53,6 @@ def _gen_noise(num_samples, sample_rate, device, f_decay=None, rolloffs=None):
     return noise[:num_samples]
 
 # Fast transforms for augmentation on the fly
-
 class ComposeTransforms(nn.Module):
     def __init__(
         self, transforms: Dict[str, nn.Module], probs: Dict[str, float]
@@ -67,6 +68,85 @@ class ComposeTransforms(nn.Module):
             if random.random() < p:
                 data = t(data)
         return data
+
+
+class SloppyPEQ(torch.nn.Module):
+    def __init__(self,
+                 sample_rate=44100,
+                 num_filters=3,
+                 freq_range=[100.0, 3000.0],
+                 gain_range=[-24.0, 24.0]) -> None:
+        super().__init__()
+        
+        self.sample_rate = sample_rate
+        self.num_filters = num_filters
+        self.freq_range = freq_range
+        self.gain_range = gain_range
+
+    def power_ratio(self, r: float, a: float, b: float):
+        return a * math.pow((b / a), r) 
+
+    def parametric_eq(self, audio: torch.Tensor):
+        center_freqs = [self.power_ratio(float(z) / (self.num_filters), self.freq_range[0], self.freq_range[1])
+                     for z in range(self.num_filters)]
+
+        gains = [random.uniform(self.gain_range[0], self.gain_range[1]) for _ in range(self.num_filters)]
+        gain_linear_values = [10 ** (gain_db / 20) for gain_db in gains]
+        gain_linear_values.append(1.0)
+        gain_linear_values = torch.Tensor(gain_linear_values).to(audio.device).view(-1, 1, 1)
+
+        bands = julius.split_bands(audio, cutoffs=center_freqs, sample_rate=self.sample_rate)
+        equalized_bands = bands * gain_linear_values
+        equalized_signal = equalized_bands.sum(dim=0)
+
+        return equalized_signal
+
+    def forward(self, data: Dict[str, torch.Tensor]):
+        transformed = data.copy()
+        transformed["audio"] = self.parametric_eq(data["audio"])
+        return transformed
+
+
+
+class PEQAug(torch.nn.Module):
+    def __init__(self,
+                 sample_rate=44100,
+                 num_filters=3,
+                 freq_range=[100.0, 3000.0],
+                 gain_range=[-24.0, 24.0],
+                 q_range=[1.0, 5.0]) -> None:
+        super().__init__()
+        
+        self.sample_rate = sample_rate
+        self.num_filters = num_filters
+        self.freq_range = freq_range
+        self.gain_range = gain_range
+        self.q_range = q_range
+
+    def power_ratio(self, r: float, a: float, b: float):
+        return a * math.pow((b / a), r) 
+
+    def parametric_eq(self, audio: torch.Tensor):
+        center_freqs = [self.power_ratio(float(z) / (self.num_filters), self.freq_range[0], self.freq_range[1])
+                     for z in range(self.num_filters)]
+
+        Qs = [self.power_ratio(random.uniform(0, 1), self.q_range[0], self.q_range[1])
+              for _ in range(self.num_filters)]
+
+        gains = [random.uniform(self.gain_range[0], self.gain_range[1]) for _ in range(self.num_filters)]
+    
+        for i in range(self.num_filters):
+            audio = F.equalizer_biquad(audio,
+                                       sample_rate=self.sample_rate,
+                                       center_freq=center_freqs[i],
+                                       gain=gains[i],
+                                       Q=Qs[i])
+        return audio
+
+    def forward(self, data: Dict[str, torch.Tensor]):
+        transformed = data.copy()
+        transformed["audio"] = self.parametric_eq(data["audio"])
+        return transformed
         
 
 # Based on torch-audiomentations (MIT License)

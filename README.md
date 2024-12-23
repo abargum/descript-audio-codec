@@ -1,3 +1,15 @@
+# This is a branch using the .dac training pipeline for voice conversion
+
+### Current extensions include:
+- Added encoder, decoder and pretrained speaker embedding network
+- Added warmup and step-based discriminator update
+- Pre-calculated units for discrete speech unit loss (not sure if the context is better with pre-calculated units)
+- Augmentation procedures for perturbation, including PEQ, for better input generalization
+
+### Before running:
+- Download the needed datasets
+- Pre-calculate discrete units using scripts/preprocess_units.py (set directories in file)
+
 # Descript Audio Codec (.dac): High-Fidelity Audio Compression with Improved RVQGAN
 
 This repository contains training and inference scripts

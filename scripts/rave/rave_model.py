@@ -2,7 +2,7 @@ from .pitch import get_f0_fcpe, extract_f0_mean_std
 from .blocks import GeneratorV2Sine
 from .blocks2 import SpeakerRAVE, EncoderV2
 from .pqmf import CachedPQMF as PQMF
-from .augmentations import ComposeTransforms, AddNoise, PitchAug
+from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
 
 import gin
 import numpy as np
@@ -69,9 +69,10 @@ class RAVE(BaseModel):
 
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
+        parametric_eq = SloppyPEQ(sample_rate=self.sample_rate, gain_range=[-15.0, 15.0])
 
-        transforms = {"noise": add_noise, "shift": shift_pitch}
-        probabilities = {"noise": 0.5, "shift": 1.0}
+        transforms = {"shift": shift_pitch, "peq":, parametric_eq, "noise": add_noise}
+        probabilities = {"shift": 1.0, "peq": 0.5, "noise": 0.5}
 
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
 
