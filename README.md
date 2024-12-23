@@ -8,7 +8,7 @@
 
 ### Before running:
 - Download the needed datasets
-- Pre-calculate discrete units using scripts/preprocess_units.py (set directories in file)
+- Pre-calculate discrete units using scripts/utils/preprocess_units.py (set directories in file)
 
 # Descript Audio Codec (.dac): High-Fidelity Audio Compression with Improved RVQGAN
 

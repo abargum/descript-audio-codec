@@ -27,7 +27,7 @@ import wandb
 from einops import rearrange
 from torchaudio.functional import resample
 import pickle
-from custom_dataset import CustomAudioDataset
+from utils.custom_dataset import CustomAudioDataset
 
 file_path = 'metadata.pkl'
 with open(file_path, 'rb') as file:

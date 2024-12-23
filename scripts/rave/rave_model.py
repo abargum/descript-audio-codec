@@ -71,7 +71,7 @@ class RAVE(BaseModel):
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
         parametric_eq = SloppyPEQ(sample_rate=self.sample_rate, gain_range=[-15.0, 15.0])
 
-        transforms = {"shift": shift_pitch, "peq":, parametric_eq, "noise": add_noise}
+        transforms = {"shift": shift_pitch, "peq": parametric_eq, "noise": add_noise}
         probabilities = {"shift": 1.0, "peq": 0.5, "noise": 0.5}
 
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
