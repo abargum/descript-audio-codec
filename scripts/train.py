@@ -19,7 +19,7 @@ from audiotools.ml.decorators import when
 from torch.utils.tensorboard import SummaryWriter
 
 import dac
-from rave.rave_model import RAVE
+from rave.rave_model_pesto import RAVE
 import wandb
 from einops import rearrange
 
@@ -261,6 +261,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         recons = AudioSignal(out["audio"], signal.sample_rate)
         unit_loss = out["unit_loss"]
         pitch_loss = out["pitch_loss"]
+        pitch_loss_weights = out["pitch_loss_weights"]
 
         x_multiband = AudioSignal(rearrange(out["x_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
         y_multiband = AudioSignal(rearrange(out["y_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
@@ -280,14 +281,14 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         state.scheduler_d.step()
 
     with accel.autocast():
-        output["gen/multiband"] = state.stft_loss(y_multiband, x_multiband)
-        output["gen/stft"] = state.stft_loss(recons, signal)
-        output["gen/mel"] = state.mel_loss(recons, signal)
-        output["gen/waveform"] = state.waveform_loss(recons, signal)
         output["gen/unit"] = unit_loss
         output["gen/pitch"] = pitch_loss
         if state.warmed_up:
-           (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
+            output["gen/multiband"] = state.stft_loss(y_multiband, x_multiband)
+            output["gen/stft"] = state.stft_loss(recons, signal)
+            output["gen/mel"] = state.mel_loss(recons, signal)
+            output["gen/waveform"] = state.waveform_loss(recons, signal)
+            (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
         output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
 
     # -------------------------
@@ -306,6 +307,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
     output["other/g_learning_rate"] = state.optimizer_g.param_groups[0]["lr"]
     output["other/d_learning_rate"] = state.optimizer_d.param_groups[0]["lr"]
     output["other/batch_size"] = signal.batch_size * accel.world_size
+    output["other/pitch_loss_weights"] = pitch_loss_weights
 
     wandb.log({"loss": output})
 
@@ -401,7 +403,7 @@ def validate(state, val_dataloader, accel):
 def train(
     args,
     accel: ml.Accelerator,
-    seed: int = 0,
+    seed: int = 10,
     save_path: str = "ckpt",
     num_iters: int = 250000,
     save_iters: list = [10000, 50000, 100000],

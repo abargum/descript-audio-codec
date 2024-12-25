@@ -13,14 +13,7 @@ from torchaudio.functional import resample
 import torch.nn.functional as F
 from audiotools.ml import BaseModel
 
-from .pesto.data import Preprocessor
-from .pesto.shift_cqt import PitchShiftCQT
-from .pesto.cqt_transforms import BatchRandomNoise, BatchRandomGain
-from .pesto.reduce_activations import reduce_activations
-
-from .pesto.equivariance import PowerSeries
-from .pesto.entropy import ShiftCrossEntropy, CrossEntropyLoss
-from .pesto.loss_weighting import GradientLossWeighter
+from .data import Preprocessor
 
 emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
 emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
@@ -81,6 +74,7 @@ class RAVE(BaseModel):
 
         self.discrete_units.eval()
 
+
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
 
@@ -95,33 +89,18 @@ class RAVE(BaseModel):
         self.cqt_shift_min = -12
         self.cqt_shift_max = 12
         self.pitch_freq = 160
-
-        max_steps = 3 * 11 // 2
-        min_steps = -max_steps
-        self.pitch_shift = PitchShiftCQT(min_steps, max_steps)
-        self.cqt_bins = 99 * 3 - 1
+        self.cqt_bins = 191
         self.cqt_center = (self.cqt_bins - self.pitch_freq) // 2
 
-        hcqt_params = {'harmonics': [1], 'fmin': 27.5, 'fmax': None, 'bins_per_semitone': 3, 'n_bins': self.cqt_bins, 'center_bins': True, 'gamma': 5, 'streaming': False}
+        hcqt_params = {'harmonics': [1], 'fmin': 32.7, 'fmax': None, 'bins_per_semitone': 2, 'n_bins': self.cqt_bins, 'center_bins': True, 'gamma': 5, 'streaming': False}
         self.QCT = Preprocessor(hop_size=23.25, sampling_rate=44100, **hcqt_params).to('cuda')
+
+        #self.p_enc = PitchEncoder(in_channels=self.pitch_freq,
+        #                          hidden_channels=[128, 256, 512],
+        #                          kernel_size_initial=7,
+        #                          kernel_size=3)
             
         self.p_enc = Resnet1d().to('cuda') #Resnet1dCC()
-        self.cqt_transforms = nn.Sequential(BatchRandomNoise(min_snr=0.1,
-                                                         max_snr=2.0,
-                                                         p=0.7),
-                                        BatchRandomGain(min_gain=0.5,
-                                                        max_gain=1.5,
-                                                        p=0.7))
-        
-        self.inv_loss_fn = CrossEntropyLoss(symmetric=True, detach_targets=True)
-        self.sce_loss_fn = ShiftCrossEntropy(pad_length=max_steps)
-        self.equiv_loss_fn = PowerSeries(value=1.019440644, power_min=1 - 128 * 3, power_max=1.0, tau=0.122462048)
-
-        initial_weights = {"invariance": 0.0,
-                           "shift_entropy": 1.0,
-                           "equivariance": 0.0}
-
-        self.loss_weighter = GradientLossWeighter(initial_weights=initial_weights, ema_rate=0.999)
 
     def load_speaker_statedict(self, path):
         loaded_state = torch.load(path, map_location="cuda:%d" % 0)
@@ -150,29 +129,31 @@ class RAVE(BaseModel):
                 audio_data: torch.Tensor,
                 sample_rate: int = None):
 
-        batch_size = audio_data.shape[0]
-        
-        cqt = self.QCT(audio_data).flatten(0, 1)
-        x, xt, n_steps = self.pitch_shift(cqt)
-        xa = x.clone()
+        cqt = self.QCT(audio_data)
 
-        xa = self.cqt_transforms(xa)
-        xt = self.cqt_transforms(xt)
+        #if torch.isnan(cqt).any():
+        #    print("NAN")
+        #    print(cqt)
 
-        y = self.p_enc(x)
-        ya = self.p_enc(xa)
-        yt = self.p_enc(xt)
+        b_size = audio_data.shape[0]
 
-        inv_loss = self.inv_loss_fn(y, ya)
-        shift_entropy_loss = self.sce_loss_fn(ya, yt, n_steps)
-        equiv_loss = self.equiv_loss_fn(ya, yt, n_steps)
+        cqt_crop = cqt[:, :, :, self.cqt_center:self.cqt_center + self.pitch_freq]
+        cqt_crop = cqt_crop.flatten(0, 1)
 
-        # Combine losses using gradient weighting
-        losses = {"invariance": inv_loss, "shift_entropy": shift_entropy_loss, "equivariance": equiv_loss}
-        pitch_loss = self.loss_weighter.combine_losses(losses, self.p_enc)
+        p_out_1 = self.p_enc(cqt_crop)
+        p_out_1 = p_out_1.view(b_size, -1, p_out_1.size(-1))
+        #p_out_1, ap_1, aap_1 = self.p_enc(cqt_crop.transpose(2,1))
 
-        pitch = reduce_activations(y)
-        pitch = pitch.view(batch_size, -1)
+        dist = torch.randint(self.cqt_shift_min, self.cqt_shift_max + 1, (b_size,), device='cuda:0')
+        start = dist + self.cqt_center
+        cqt_crop_shifted = torch.stack([cqt_[:, :, i:i + self.pitch_freq] for cqt_, i in zip(cqt, start)], dim=0)
+        cqt_crop_shifted = cqt_crop_shifted.flatten(0, 1)
+        p_out_2 = self.p_enc(cqt_crop_shifted)
+        p_out_2 = p_out_2.view(b_size, -1, p_out_2.size(-1))
+        #p_out_2, ap_2, aap_2 = self.p_enc(cqt_crop_shifted.transpose(2,1))
+
+        p_out_1 = (p_out_1 * self.pitch_bins).sum(dim=-1)
+        p_out_2 = (p_out_2 * self.pitch_bins).sum(dim=-1)
 
         ##########################
 
@@ -202,10 +183,10 @@ class RAVE(BaseModel):
         
         emb = emb.unsqueeze(-1).repeat(1, 1, z.shape[-1])
 
-        y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb), dim=1), pitch)
+        y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb), dim=1), p_out_1)
         y = self.pqmf.inverse(y_multiband)
 
-        #pitch_loss = F.huber_loss(p_out_2.log2() + 0.5 * dist[:, None], p_out_1.log2(), delta=1.0)
+        pitch_loss = F.huber_loss(p_out_2.log2() + 0.5 * dist[:, None], p_out_1.log2(), delta=1.0)
         #if torch.isnan(pitch_loss).any():
         #    print("NAN")
         #    print(pitch_loss)
@@ -216,7 +197,6 @@ class RAVE(BaseModel):
             "audio": y[..., :length],
             "unit_loss": ce_loss,
             "pitch_loss": pitch_loss,
-            "pitch_loss_weights": self.loss_weighter.get_weights(),
             "p_audio": audio_aug.unsqueeze(1),
             "x_multiband": audio_multiband,
             "y_multiband": y_multiband,

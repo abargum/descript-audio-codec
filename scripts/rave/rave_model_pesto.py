@@ -13,10 +13,7 @@ from torchaudio.functional import resample
 import torch.nn.functional as F
 from audiotools.ml import BaseModel
 
-from .pesto.data import Preprocessor
-from .pesto.shift_cqt import PitchShiftCQT
-from .pesto.cqt_transforms import BatchRandomNoise, BatchRandomGain
-from .pesto.reduce_activations import reduce_activations
+from .pesto.loader import load_model
 
 from .pesto.equivariance import PowerSeries
 from .pesto.entropy import ShiftCrossEntropy, CrossEntropyLoss
@@ -81,6 +78,7 @@ class RAVE(BaseModel):
 
         self.discrete_units.eval()
 
+
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
 
@@ -89,32 +87,12 @@ class RAVE(BaseModel):
 
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
 
-        #FOR PITCH TRAINING
-        self.pitch_f0_bins = 64
-        self.pitch_bins = torch.linspace(np.log(50), np.log(1000), self.pitch_f0_bins, device='cuda').exp()
-        self.cqt_shift_min = -12
-        self.cqt_shift_max = 12
-        self.pitch_freq = 160
-
-        max_steps = 3 * 11 // 2
-        min_steps = -max_steps
-        self.pitch_shift = PitchShiftCQT(min_steps, max_steps)
-        self.cqt_bins = 99 * 3 - 1
-        self.cqt_center = (self.cqt_bins - self.pitch_freq) // 2
-
-        hcqt_params = {'harmonics': [1], 'fmin': 27.5, 'fmax': None, 'bins_per_semitone': 3, 'n_bins': self.cqt_bins, 'center_bins': True, 'gamma': 5, 'streaming': False}
-        self.QCT = Preprocessor(hop_size=23.25, sampling_rate=44100, **hcqt_params).to('cuda')
+        CHECKPOINT_NAME = "scripts/rave/pesto/mir-1k_g5_conf.ckpt"
+        #CHECKPOINT_NAME = ""
+        self.pesto = load_model(CHECKPOINT_NAME, step_size=23.5, sampling_rate=self.sample_rate, streaming=False, max_batch_size=32, mirror=1.0)
             
-        self.p_enc = Resnet1d().to('cuda') #Resnet1dCC()
-        self.cqt_transforms = nn.Sequential(BatchRandomNoise(min_snr=0.1,
-                                                         max_snr=2.0,
-                                                         p=0.7),
-                                        BatchRandomGain(min_gain=0.5,
-                                                        max_gain=1.5,
-                                                        p=0.7))
-        
         self.inv_loss_fn = CrossEntropyLoss(symmetric=True, detach_targets=True)
-        self.sce_loss_fn = ShiftCrossEntropy(pad_length=max_steps)
+        self.sce_loss_fn = ShiftCrossEntropy(pad_length=3 * 11 // 2)
         self.equiv_loss_fn = PowerSeries(value=1.019440644, power_min=1 - 128 * 3, power_max=1.0, tau=0.122462048)
 
         initial_weights = {"invariance": 0.0,
@@ -151,28 +129,15 @@ class RAVE(BaseModel):
                 sample_rate: int = None):
 
         batch_size = audio_data.shape[0]
-        
-        cqt = self.QCT(audio_data).flatten(0, 1)
-        x, xt, n_steps = self.pitch_shift(cqt)
-        xa = x.clone()
 
-        xa = self.cqt_transforms(xa)
-        xt = self.cqt_transforms(xt)
-
-        y = self.p_enc(x)
-        ya = self.p_enc(xa)
-        yt = self.p_enc(xt)
+        y, ya, yt, n_steps = self.pesto(audio_data)
 
         inv_loss = self.inv_loss_fn(y, ya)
         shift_entropy_loss = self.sce_loss_fn(ya, yt, n_steps)
         equiv_loss = self.equiv_loss_fn(ya, yt, n_steps)
 
-        # Combine losses using gradient weighting
         losses = {"invariance": inv_loss, "shift_entropy": shift_entropy_loss, "equivariance": equiv_loss}
-        pitch_loss = self.loss_weighter.combine_losses(losses, self.p_enc)
-
-        pitch = reduce_activations(y)
-        pitch = pitch.view(batch_size, -1)
+        pitch_loss = self.loss_weighter.combine_losses(losses, self.pesto.encoder)
 
         ##########################
 
@@ -187,6 +152,13 @@ class RAVE(BaseModel):
                 target_units[i, :] = self.discrete_units.units(sequence.unsqueeze(0).unsqueeze(0))
 
         f0 = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
+
+        with torch.no_grad():
+            pitch, confidence, vol = self.pesto.get_pitch(audio_data.squeeze(1),
+                                                          sr=self.sample_rate,
+                                                          convert_to_freq=True,
+                                                          return_activations=False)
+
 
         audio_multiband = self.pqmf(audio_data)
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
@@ -204,13 +176,6 @@ class RAVE(BaseModel):
 
         y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb), dim=1), pitch)
         y = self.pqmf.inverse(y_multiband)
-
-        #pitch_loss = F.huber_loss(p_out_2.log2() + 0.5 * dist[:, None], p_out_1.log2(), delta=1.0)
-        #if torch.isnan(pitch_loss).any():
-        #    print("NAN")
-        #    print(pitch_loss)
-        #pitch_loss2 = torch.nn.functional.mse_loss(p_out_1, f0.squeeze(-1))
-        #print(pitch_loss1, pitch_loss2)
         
         return {
             "audio": y[..., :length],

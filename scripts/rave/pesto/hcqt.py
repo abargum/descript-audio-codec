@@ -392,10 +392,12 @@ class CQT:
         if streaming:
             for kwarg in cls.regular_only_kwargs:
                 kwargs.pop(kwarg, None)
+                print("LOADED STREAMING CQT")
             return StreamingCQT(*args, **kwargs)
 
         for kwarg in cls.streaming_only_kwargs:
             kwargs.pop(kwarg, None)
+            print("LOADED REGULAR CQT")
         return RegularCQT(*args, **kwargs)
 
 
@@ -417,6 +419,8 @@ class HarmonicCQT(nn.Module):
             max_batch_size: int = 1
     ):
         super(HarmonicCQT, self).__init__()
+
+        print("USING STREAMING MODE:", streaming)
 
         if center_bins:
             fmin = fmin / 2 ** ((bins_per_semitone - 1) / (24 * bins_per_semitone))
