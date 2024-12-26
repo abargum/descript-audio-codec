@@ -8,13 +8,17 @@ from torchaudio.functional import resample
 
 # Load HuBERT model
 discrete_units = torch.hub.load("bshall/hubert:main", "hubert_discrete",
-                              trust_repo=True).to(torch.device("cuda"))
+                              trust_repo=True).to(torch.device("cuda:0"))
 discrete_units.eval()
 
 def get_pitch_contour(file_path, sr):
     """Extract feature from audio file."""
     x, sr = librosa.load(file_path, sr=sr, mono=True)
-    x = torch.tensor(x).unsqueeze(0).to(torch.device('cuda'))
+    x = torch.tensor(x).unsqueeze(0).to(torch.device('cuda:0'))
+    if x.shape[-1] < 131702:
+        zeros = torch.zeros(1, 131702-x.shape[-1]).to('cuda:0')
+        x = torch.cat((x, zeros), dim=-1)
+        print("Padded input")
     
     x_resampled = resample(x, sr, 16000)
     units = discrete_units.units(x_resampled.unsqueeze(0))
@@ -63,8 +67,8 @@ def process_audio_directory(base_dirs, output_path, sample_rate):
 
 # Example usage
 base_directories = [
-    "../vctk-small",
-    "val-set-test",
+    "VCTK-Corpus/wav48",
+    "validation-set",
 ]
 sample_rate = 44100
 output_file = "metadata.pkl"

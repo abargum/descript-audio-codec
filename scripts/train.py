@@ -22,7 +22,7 @@ from audiotools.ml.decorators import when
 from torch.utils.tensorboard import SummaryWriter
 
 import dac
-from rave.rave_model import RAVE
+from rave.rave_model_pesto import RAVE
 import wandb
 from einops import rearrange
 from torchaudio.functional import resample
@@ -135,6 +135,7 @@ class State:
 
     tracker: Tracker
     warmed_up: bool
+    warmed_up_pitch: bool
 
 
 @argbind.bind(without_prefix=True)
@@ -217,6 +218,7 @@ def load(
         train_data=train_data,
         val_data=val_data,
         warmed_up=False,
+        warmed_up_pitch=False
     )
 
 
@@ -270,7 +272,7 @@ def get_units(batch):
     return target_units
 
 @timer()
-def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
+def train_loop(state, batch, accel, lambdas, update_disc_every, warmup, warmup_pitch):
     state.generator.train()
     state.discriminator.train()
     output = {}
@@ -281,20 +283,25 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
             batch["signal"].clone(), **batch["transform_args"]
         )
 
-        target_units = get_units(batch)
+        #target_units = get_units(batch)
 
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
-        projected_z = out["projected_z"]
+        #projected_z = out["projected_z"]
+
+        unit_loss = out["unit_loss"]
+        pitch_loss = out["pitch_loss"]
+        pitch_loss_weights = out["pitch_loss_weights"]
 
         x_multiband = AudioSignal(rearrange(out["x_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
         y_multiband = AudioSignal(rearrange(out["y_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
 
-        unit_loss = torch.nn.functional.cross_entropy(projected_z, target_units.type(torch.int64).to(recons.device))
+        #unit_loss = torch.nn.functional.cross_entropy(projected_z, target_units.type(torch.int64).to(recons.device))
 
     with accel.autocast():
-        output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
+        if state.warmed_up:
+            output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
 
     if state.warmed_up and state.tracker.step % update_disc_every == 0:
         state.optimizer_d.zero_grad()
@@ -307,13 +314,15 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         state.scheduler_d.step()
 
     with accel.autocast():
-        output["gen/multiband"] = state.stft_loss(y_multiband, x_multiband)
-        output["gen/stft"] = state.stft_loss(recons, signal)
-        output["gen/mel"] = state.mel_loss(recons, signal)
-        output["gen/waveform"] = state.waveform_loss(recons, signal)
         output["gen/unit"] = unit_loss
-        if state.warmed_up:
-           (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
+        output["gen/pitch"] = pitch_loss
+        if state.warmed_up_pitch:
+            output["gen/multiband"] = state.stft_loss(y_multiband, x_multiband)
+            output["gen/stft"] = state.stft_loss(recons, signal)
+            output["gen/mel"] = state.mel_loss(recons, signal)
+            output["gen/waveform"] = state.waveform_loss(recons, signal)
+            if state.warmed_up:
+               (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
         output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
 
     # -------------------------
@@ -332,8 +341,12 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
     output["other/g_learning_rate"] = state.optimizer_g.param_groups[0]["lr"]
     output["other/d_learning_rate"] = state.optimizer_d.param_groups[0]["lr"]
     output["other/batch_size"] = signal.batch_size * accel.world_size
+    output["other/pitch_loss_weights"] = pitch_loss_weights
 
     wandb.log({"loss": output})
+
+    if state.tracker.step > warmup_pitch and not state.warmed_up_pitch:
+       state.warmed_up_pitch = True
 
     if state.tracker.step > warmup and not state.warmed_up:
        state.warmed_up = True
@@ -433,16 +446,18 @@ def train(
     save_iters: list = [10000, 50000, 100000],
     sample_freq: int = 10000,
     valid_freq: int = 10000,
-    batch_size: int = 12,
+    batch_size: int = 8,
     val_batch_size: int = 10,
     num_workers: int = 8,
     update_disc_every: int = 1,
     warmup: int = 50000,
+    warmup_pitch: int = 25000,
     val_idx: list = [0, 1, 2, 3, 4, 5, 6, 7],
     lambdas: dict = {
           "gen/mel": 12.0,
           "gen/multiband": 3.0,
           "gen/unit": 1.0,
+          "gen/pitch": 1.0,
           "adv/feat_loss": 2.0,
           "adv/gen_loss": 1.0,
     },
@@ -490,7 +505,7 @@ def train(
 
     with tracker.live:
         for tracker.step, batch in enumerate(train_dataloader, start=tracker.step):
-            train_loop(state, batch, accel, lambdas, update_disc_every, warmup)
+            train_loop(state, batch, accel, lambdas, update_disc_every, warmup, warmup_pitch)
 
             last_iter = (
                 tracker.step == num_iters - 1 if num_iters is not None else False
