@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from absl import flags
 import librosa
 import pickle
-from rave.rave_model import RAVE
+from rave.rave_model_pesto import RAVE
 from utils.utils import load_dict_from_txt
 
 import rave.blocks
@@ -58,6 +58,12 @@ class ScriptedRAVE(nn_tilde.Module):
         self.pqmf = pretrained.pqmf
         self.encoder = pretrained.encoder
         self.decoder = pretrained.decoder
+
+        example_audio = torch.randn(1, 1, 2048)  # 1 second of audio at 44.1kHz
+        traced_methods = {'get_pitch': example_audio}
+        self.pesto = torch.jit.trace_module(pretrained.pesto, traced_methods)
+        
+        #self.pesto = torch.jit.trace_module(pretrained.pesto.get_pitch, torch.rand(1, 65536))
         
         self.speaker_encoder = pretrained.speaker_encoder
         emb_audio_pqmf = self.pqmf(emb_audio)
@@ -118,6 +124,8 @@ class ScriptedRAVE(nn_tilde.Module):
                 f'(signal) Reconstructed audio signal {channel}'
                 for channel in channels
             ],
+            test_method=True,
+            test_buffer_size=2048,
         )
 
     def post_process_latent(self, z):
@@ -134,25 +142,36 @@ class ScriptedRAVE(nn_tilde.Module):
 
     def forward(self, inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]):
 
-        x, p, s = inputs
+        x_in, p, s = inputs
         
-        in_length = x.shape[-1]
-        f0 = get_pitch(x, block_size=1025) #self.yin(x)
+        in_length = x_in.shape[-1]
+        #f0 = get_pitch(x, block_size=1025) #self.yin(x)
 
-        shifted_pitch = self.p_tracker(f0)
+        pitch, vol, _ = self.pesto.get_pitch(x_in)
+        vol = vol / vol.max()
+        uv = torch.where(vol.squeeze(-1) < 0.01, torch.tensor(0), torch.tensor(1))
+        pitch = pitch * uv
+        pitch = pitch.unsqueeze(1) * 2       
+
+        #print("F0", f0)
+        #print("Pi", pitch)
+
+        shifted_pitch = self.p_tracker(pitch)
+
+        #shifted_pitch = self.p_tracker(f0)
         shifted_pitch *= p
         
-        x = self.pqmf(x)
+        x = self.pqmf(x_in)
         z = self.encoder(x[:, :6, :])
         emb = self.speaker.repeat(z.shape[0], 1, z.shape[-1]) * s
         
         z = torch.cat((z, emb), dim=1)
-        upp_factor = in_length // f0.shape[-1]
+        upp_factor = in_length // pitch.shape[-1]
         
-        y, harm = self.decoder(z, shifted_pitch.squeeze(1), upp_factor=upp_factor)
+        y, harm = self.decoder(z, pitch.squeeze(1), upp_factor=upp_factor)
         y = self.pqmf.inverse(y)
         
-        return y
+        return harm + x_in * 0.5
 
     @torch.jit.export
     def get_learn_target(self) -> bool:
@@ -232,10 +251,12 @@ def main():
         stereo=stereo,
         target_sr=sample_rate,
     )
+    
+    pitch, vol, _ = scripted_rave.pesto.get_pitch(x)
 
     # ------ FOR TEST ------
     x, sr = librosa.load("audio/male.wav", sr=44100, mono=True)
-    x = torch.tensor(x[:1*131072]).unsqueeze(0).unsqueeze(0)
+    x = torch.tensor(x[:2*131072]).unsqueeze(0).unsqueeze(0)
     chunk_size = 2048
     num_chunks = (x.shape[-1] + chunk_size - 1) // chunk_size
 

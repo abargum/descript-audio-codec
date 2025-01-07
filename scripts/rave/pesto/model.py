@@ -30,7 +30,28 @@ class ToeplitzLinear(nn.Conv1d):
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         return super(ToeplitzLinear, self).forward(input.unsqueeze(-2)).squeeze(-2)
+"""
 
+class ToeplitzLinear(nn.Conv1d):
+    def __init__(self, in_features: int, out_features: int) -> None:
+        # Explicitly annotate types for TorchScript
+        self.in_features: int = in_features
+        self.out_features: int = out_features
+        
+        super(ToeplitzLinear, self).__init__(
+            in_channels=1,
+            out_channels=1,
+            kernel_size=in_features+out_features-1,
+            padding=out_features-1,
+            bias=False
+        )
+
+    def forward(self, input: Tensor) -> Tensor:
+        x: Tensor = input.unsqueeze(-2)
+        x = F.conv1d(x, self.weight, self.bias, self.stride,
+                    self.padding, self.dilation, self.groups)
+        return x.squeeze(-2)
+"""
 
 class Resnet1d(nn.Module):
     """
@@ -212,9 +233,9 @@ class PESTO(nn.Module):
         self.cqt_transforms = nn.Sequential(BatchRandomNoise(min_snr=0.1, max_snr=2.0, p=0.7),
                                             BatchRandomGain(min_gain=0.5, max_gain=1.5, p=0.7))
 
-    def forward(self, audio_data: torch.Tensor, sr: int) -> OUTPUT_TYPE:
+    def forward(self, audio_data: torch.Tensor) -> OUTPUT_TYPE:
 
-        x = self.preprocessor(audio_data, sr=sr)
+        x = self.preprocessor(audio_data, sr=44100)
 
         # compute volume and confidence
         energy = x.mul_(log(10) / 10.).exp().squeeze_(1)
@@ -236,8 +257,7 @@ class PESTO(nn.Module):
 
     def get_pitch(self,
                 audio_waveforms: torch.Tensor,
-                sr: Optional[int] = None,
-                convert_to_freq: bool = False,
+                convert_to_freq: bool = True,
                 return_activations: bool = True) -> OUTPUT_TYPE:
         r"""
 
@@ -256,8 +276,8 @@ class PESTO(nn.Module):
             activations (torch.Tensor): activations of the model, shape (batch_size?, num_timesteps, output_dim)
         """
         
-        batch_size = audio_waveforms.size(0) if audio_waveforms.ndim == 2 else None
-        x = self.preprocessor(audio_waveforms, sr=sr)
+        batch_size = audio_waveforms.size(0) if audio_waveforms.ndim == 3 else None
+        x = self.preprocessor(audio_waveforms)
 
         # compute volume and confidence
         energy = x.mul_(log(10) / 10.).exp().squeeze_(1)
@@ -268,13 +288,13 @@ class PESTO(nn.Module):
         x = self.crop_cqt(x)  # the CQT has to be cropped beforehand
 
         activations = self.encoder(x)
+
         if batch_size:  # TODO: unflatten maybe?
             activations = activations.view(batch_size, -1, activations.size(-1))
 
         activations = activations.roll(-round(self.shift.cpu().item() * self.bins_per_semitone), -1)
-
         preds = reduce_activations(activations, reduction=self.reduction)
-
+        
         if convert_to_freq:
             preds = 440 * 2 ** ((preds - 69) / 12)
 

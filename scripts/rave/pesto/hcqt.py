@@ -309,6 +309,7 @@ class BaseCQT(nn.Module):
 
         # CQT
         cqt = self.conv(x).view(x.size(0), 2, self.n_bins, -1)
+        print("CQT:", cqt.shape)
 
         if normalization_type == "librosa":
             cqt *= self.sqrt_lengths
@@ -423,10 +424,11 @@ class HarmonicCQT(nn.Module):
         if center_bins:
             fmin = fmin / 2 ** ((bins_per_semitone - 1) / (24 * bins_per_semitone))
 
+        #HERE WE NEED TO SET THE STREAMING KEYWORD MANUALLY WHEN EXPORTING!
         self.cqt_kernels = nn.ModuleList([
             CQT(sr=sr, hop_length=hop_length, fmin=h * fmin, fmax=fmax, n_bins=n_bins,
                 bins_per_octave=12*bins_per_semitone, gamma=gamma,
-                streaming=streaming, mirror=mirror, max_batch_size=max_batch_size,
+                streaming=True, mirror=mirror, max_batch_size=max_batch_size,
                 output_format="Complex")
             for h in harmonics
         ])

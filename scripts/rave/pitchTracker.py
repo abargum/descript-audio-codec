@@ -123,3 +123,9 @@ class PitchRegisterTracker2(torch.nn.Module):
         source_pitch = standardized_source_pitch * self.target_std + self.target_mean
         
         return source_pitch
+
+    def reset_buffer(self) -> None:
+        self.target_mean = torch.tensor(0.0, dtype=torch.float32)
+        self.target_std = torch.tensor(0.0, dtype=torch.float32)
+        self.in_mean = torch.tensor(0.0, dtype=torch.float32)
+        self.in_var = torch.tensor(0.0, dtype=torch.float32)

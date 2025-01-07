@@ -42,7 +42,7 @@ class RAVE(BaseModel):
         capacity = 64,
         speaker_dim = 256,
         sampling_rate = 44100,
-        stream_cqt = False,
+        stream_cqt = True,
         valid_signal_crop = True):
         super().__init__()
 
@@ -89,7 +89,7 @@ class RAVE(BaseModel):
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
 
         CHECKPOINT_NAME = "scripts/rave/pesto/mir-1k_g5.ckpt"
-        self.pesto = load_model(CHECKPOINT_NAME, load_checkpoint=True, step_size=23.5, sampling_rate=self.sample_rate, streaming=stream_cqt, max_batch_size=32, mirror=1.0)
+        self.pesto = load_model(CHECKPOINT_NAME, load_checkpoint=True, step_size=23.2, sampling_rate=self.sample_rate, streaming=stream_cqt, max_batch_size=32, mirror=1.0)
             
         self.inv_loss_fn = CrossEntropyLoss(symmetric=True, detach_targets=True)
         self.sce_loss_fn = ShiftCrossEntropy(pad_length=3 * 11 // 2)

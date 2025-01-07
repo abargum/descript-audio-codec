@@ -90,6 +90,7 @@ class Preprocessor(nn.Module):
 
     def _reset_hcqt_kernels(self) -> None:
         hop_length = int(self.hop_size * self.hcqt_sr / 1000 + 0.5)
+        print(hop_length)
         self.hcqt_kernels = HarmonicCQT(sr=self.hcqt_sr,
                                         hop_length=hop_length,
                                         **self.hcqt_kwargs).to(self._device.device)
