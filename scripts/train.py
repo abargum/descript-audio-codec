@@ -293,8 +293,9 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
 
         unit_loss = torch.nn.functional.cross_entropy(projected_z, target_units.type(torch.int64).to(recons.device))
 
-    with accel.autocast():
-        output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
+    if state.warmed_up:
+        with accel.autocast():
+            output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
 
     if state.warmed_up and state.tracker.step % update_disc_every == 0:
         state.optimizer_d.zero_grad()

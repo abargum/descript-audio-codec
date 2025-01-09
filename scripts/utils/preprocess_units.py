@@ -7,14 +7,22 @@ import torch.nn as nn
 from torchaudio.functional import resample
 
 # Load HuBERT model
-discrete_units = torch.hub.load("bshall/hubert:main", "hubert_discrete",
-                              trust_repo=True).to(torch.device("cuda"))
+discrete_units = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True).to(torch.device("cuda"))
 discrete_units.eval()
 
 def get_pitch_contour(file_path, sr):
     """Extract feature from audio file."""
     x, sr = librosa.load(file_path, sr=sr, mono=True)
     x = torch.tensor(x).unsqueeze(0).to(torch.device('cuda'))
+
+    #zero-pad end if x is smaller than input to network
+    if x.shape[-1] < 65536:
+        zeros = torch.zeros(1, 65536 - x.shape[-1]).to(torch.device('cuda'))
+        x = torch.cat((x, zeros), dim=-1)
+
+    #zero pad end with one second to ensure that the offset does not go out of range
+    zeros = torch.zeros(1, sr).to(torch.device('cuda'))
+    x = torch.cat((x, zeros), dim=-1)
     
     x_resampled = resample(x, sr, 16000)
     units = discrete_units.units(x_resampled.unsqueeze(0))
@@ -58,12 +66,12 @@ def process_audio_directory(base_dirs, output_path, sample_rate):
     # Save all processed data
     with open(output_path, 'wb') as f:
         pickle.dump(audio_data, f)
-    print(f"\nSaved pitch contours to {output_path}")
+    print(f"\nSaved units to {output_path}")
     print(f"Processed {len(audio_data)} files in total")
 
 # Example usage
 base_directories = [
-    "../vctk-small",
+    "vctk-small",
     "val-set-test",
 ]
 sample_rate = 44100

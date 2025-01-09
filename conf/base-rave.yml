@@ -30,7 +30,7 @@ valid_freq: 10000
 sample_freq: 10000
 num_workers: 32 #overwritten in gpu yml
 update_disc_every: 1
-warmup: 35000
+warmup: 35
 val_idx: [0, 1, 2, 3, 4, 5, 6, 7]
 seed: 0
 lambdas:

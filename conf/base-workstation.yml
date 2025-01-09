@@ -16,8 +16,8 @@ Discriminator.bands:
 # Optimization
 AdamW_G.betas: [0.8, 0.99]
 
-generator/AdamW.lr:     0.0002
-discriminator/AdamW.lr: 0.0002
+generator/AdamW.lr:     0.00012
+discriminator/AdamW.lr: 0.0001
 
 ExponentialLR.gamma: 0.999998
 
@@ -29,6 +29,7 @@ save_iters: [10000, 50000, 100000, 200000, 300000, 400000, 500000, 600000, 70000
 valid_freq: 10000
 sample_freq: 10000
 num_workers: 32 #overwritten in gpu yml
+warmup: 35000
 val_idx: [0, 1, 2, 3, 4, 5, 6, 7]
 seed: 0
 lambdas:
@@ -47,10 +48,10 @@ build_transform.augment_prob: 0.0
 build_transform.augment:
   - Identity
 build_transform.postprocess:
-  #- VolumeNorm
-  #- RescaleAudio
-  #- ShiftPhase
-  - Identity
+  - VolumeNorm
+  - RescaleAudio
+  - ShiftPhase
+  #- Identity
 
 # Loss setup
 MultiScaleSTFTLoss.window_lengths: [512]
@@ -69,10 +70,10 @@ train/AudioDataset.n_examples: 10000000
 train/build_dataset.duration: 1.486078
 train/build_dataset.folders:
   music_hq:
-    - ../vctk-small
+    - vctk-small
 
 val/build_transform.augment_prob: 1.0
-val/AudioDataset.n_examples: 12
+val/AudioDataset.n_examples: 10
 val/build_dataset.duration: 1.486078
 val/build_dataset.folders:
   music_hq:
@@ -82,8 +83,6 @@ test/build_transform.augment_prob: 1.0
 test/AudioDataset.n_examples: 100
 test/build_dataset.duration: 1.486078
 test/build_dataset.folders:
-  music_hq:
-    - ../test-vctk
 
 AudioLoader.shuffle: true
 AudioDataset.without_replacement: true

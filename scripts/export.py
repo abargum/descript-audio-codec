@@ -24,6 +24,7 @@ import rave.resampler
 
 from rave.yin import YIN
 from rave.torchyin import get_pitch
+from rave.torchpyin import get_pitch_viterbi
 from rave.pitchTracker import PitchRegisterTracker, PitchRegisterTracker2
 
 emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
@@ -112,7 +113,7 @@ class ScriptedRAVE(nn_tilde.Module):
             in_channels=1,
             in_ratio=1,
             out_channels=2 if stereo else 1,
-            out_ratio=1,
+            out_ratio=1024,
             input_labels=['(signal) Input audio signal'],
             output_labels=[
                 f'(signal) Reconstructed audio signal {channel}'
@@ -137,8 +138,9 @@ class ScriptedRAVE(nn_tilde.Module):
         x, p, s = inputs
         
         in_length = x.shape[-1]
-        f0 = get_pitch(x, block_size=1025) #self.yin(x)
-
+        #f0 = get_pitch(x, block_size=1024) #self.yin(x)
+        f0 = get_pitch_viterbi(x.squeeze(1), block_size=1025, n_candidates=50, transition_weight=0.5) #self.yin(x)
+        f0 = f0.unsqueeze(1)
         shifted_pitch = self.p_tracker(f0)
         shifted_pitch *= p
         
@@ -152,7 +154,7 @@ class ScriptedRAVE(nn_tilde.Module):
         y, harm = self.decoder(z, shifted_pitch.squeeze(1), upp_factor=upp_factor)
         y = self.pqmf.inverse(y)
         
-        return y
+        return f0
 
     @torch.jit.export
     def get_learn_target(self) -> bool:
