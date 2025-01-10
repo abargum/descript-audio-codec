@@ -87,6 +87,8 @@ class ScriptedRAVE(nn_tilde.Module):
         self.f0_stds = f0_std_list
 
         self.yin = YIN(sr = self.sr, frame_time = 0.012)
+
+        self.prev_speaker = 0
         self.p_tracker = PitchRegisterTracker2(target_mean=self.f0_means[2], target_std=self.f0_stds[2])
 
         self.resampler = None
@@ -101,6 +103,7 @@ class ScriptedRAVE(nn_tilde.Module):
         self.register_attribute("reset_target", False)
         self.register_attribute("learn_source", False)
         self.register_attribute("reset_source", False)
+        
 
         self.latent_size = 320
 
@@ -155,10 +158,28 @@ class ScriptedRAVE(nn_tilde.Module):
         z = self.encoder(x[:, :6, :])
         return z
 
-    def forward(self, inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]):
+    def forward(self, inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]):
 
-        x, p, s = inputs
+        x, p, s, i = inputs
 
+        """
+        if i == 0:
+            emb = self.speakers[0]
+            if i != self.prev_speaker:
+                self.prev_speaker = i
+                self.p_tracker.reset_buffer(self.f0_means[0], self.f0_means[0])
+        elif i == 1:
+            emb = self.speakers[1]
+            if i != self.prev_speaker:
+                self.prev_speaker = i
+                self.p_tracker.reset_buffer(self.f0_means[1], self.f0_means[1])
+        else:
+            emb = self.speakers[2]
+            if i != self.prev_speaker:
+                self.prev_speaker = i
+                self.p_tracker.reset_buffer(self.f0_means[2], self.f0_means[2])
+
+        """
         emb = self.speakers[2]
         
         in_length = x.shape[-1]
@@ -280,7 +301,7 @@ def main():
         
         # Process the chunk
         chunk = chunk.float()
-        y = scripted_rave((chunk, torch.ones(1), torch.ones(1)))
+        y = scripted_rave((chunk, torch.ones(1), torch.ones(1), 1))
         processed_chunks.append(y)
     
     out = torch.cat(processed_chunks, dim=-1)
