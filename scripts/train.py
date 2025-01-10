@@ -22,12 +22,15 @@ from audiotools.ml.decorators import when
 from torch.utils.tensorboard import SummaryWriter
 
 import dac
-from rave.rave_model import RAVE
+from rave.rave_model_pitch import RAVE
 import wandb
 from einops import rearrange
 from torchaudio.functional import resample
 import pickle
 from utils.custom_dataset import CustomAudioDataset
+
+from rave.pitch_loss import loss as pitch_loss_fn
+from rave.penn_utils import *
 
 file_path = 'metadata.pkl'
 with open(file_path, 'rb') as file:
@@ -230,12 +233,25 @@ def val_loop(batch, state, accel):
     )
 
     out = state.generator(signal.audio_data, signal.sample_rate)
+    
     target_pitch = out["target_pitch"]
-    predicted_pitch = out["predicted_pitch"]
-    prosody_loss = torch.nn.functional.l1_loss(predicted_pitch, target_pitch)
+    logits = out["logits"]
+    
+    # Convert to pitch bin categories
+    bins = frequency_to_bins(target_pitch)
+
+    # Determine voiced regions (when target_pitch > 0)
+    voiced = target_pitch > 0
+
+    # Set unvoiced bins to random values
+    bins = torch.where(voiced.to(logits.device),
+                       bins.to(logits.device),
+                       torch.randint(0, PITCH_BINS, bins.shape, dtype=torch.long).to(logits.device))
+    
+    pitch_loss = pitch_loss_fn(logits, bins.to(logits.device))
     
     return {
-        "prosody": prosody_loss,
+        "pitch_loss": pitch_loss,
     }
 
 def get_units(batch):
@@ -266,21 +282,28 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
             batch["signal"].clone(), **batch["transform_args"]
         )
 
-        target_units = get_units(batch)
-
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
+        out = state.generator(signal.audio_data, signal.sample_rate)
+    
         target_pitch = out["target_pitch"]
-        predicted_pitch = out["predicted_pitch"]
-        projected_z = out["projected_z"]
-
-        unit_loss = torch.nn.functional.cross_entropy(projected_z, target_units.type(torch.int64).to("cuda"))
-        prosody_loss = torch.nn.functional.l1_loss(predicted_pitch, target_pitch)
+        logits = out["logits"]
+        
+        # Convert to pitch bin categories
+        bins = frequency_to_bins(target_pitch)
+    
+        # Determine voiced regions (when target_pitch > 0)
+        voiced = target_pitch > 0
+    
+        # Set unvoiced bins to random values
+        bins = torch.where(voiced.to(logits.device),
+                           bins.to(logits.device),
+                           torch.randint(0, PITCH_BINS, bins.shape, dtype=torch.long).to(logits.device))
+        
+        pitch_loss = pitch_loss_fn(logits, bins.to(logits.device))
 
     with accel.autocast():
-        output["gen/unit"] = unit_loss
-        output["gen/prosody"] = prosody_loss
-        output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
+        output["gen/total_loss"] = pitch_loss
 
     # -------------------------
     if state.tracker.step % update_disc_every != 0 or update_disc_every == 1:
@@ -311,7 +334,7 @@ def checkpoint(state, save_iters, save_path):
 
     tags = ["latest"]
     state.tracker.print(f"Saving to {str(Path('.').absolute())}")
-    if state.tracker.is_best("val", "prosody"):
+    if state.tracker.is_best("val", "pitch_loss"):
         state.tracker.print(f"Best generator so far")
         tags.append("best")
     if state.tracker.step in save_iters:

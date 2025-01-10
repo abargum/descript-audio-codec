@@ -16,10 +16,10 @@ Discriminator.bands:
 # Optimization
 AdamW_G.betas: [0.8, 0.99]
 
-generator/AdamW.lr:     0.00012
+generator/AdamW.lr:     0.0005
 discriminator/AdamW.lr: 0.0001
 
-ExponentialLR.gamma: 0.999998
+ExponentialLR.gamma: 0.99999
 
 amp: false
 val_batch_size: 100 #overwritten in gpu yml
@@ -67,14 +67,14 @@ train/AudioDataset.n_examples: 10000000
 train/build_dataset.duration: 1.486078
 train/build_dataset.folders:
   music_hq:
-    - vctk-small
+    - VCTK-Corpus/wav48
 
 val/build_transform.augment_prob: 1.0
-val/AudioDataset.n_examples: 10
+val/AudioDataset.n_examples: 2000
 val/build_dataset.duration: 1.486078
 val/build_dataset.folders:
   music_hq:
-    - val-set-test
+    - VCTK-Val
 
 test/build_transform.augment_prob: 1.0
 test/AudioDataset.n_examples: 100
