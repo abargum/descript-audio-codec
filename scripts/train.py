@@ -230,28 +230,13 @@ def val_loop(batch, state, accel):
     )
 
     out = state.generator(signal.audio_data, signal.sample_rate)
-    recons = AudioSignal(out["audio"], signal.sample_rate)
-
+    target_pitch = out["target_pitch"]
+    predicted_pitch = out["predicted_pitch"]
+    prosody_loss = torch.nn.functional.l1_loss(predicted_pitch, target_pitch)
+    
     return {
-        "loss": state.mel_loss(recons, signal),
-        "mel/loss": state.mel_loss(recons, signal),
-        "stft/loss": state.stft_loss(recons, signal),
-        "waveform/loss": state.waveform_loss(recons, signal),
+        "prosody": prosody_loss,
     }
-
-@torch.no_grad()
-def get_audio(batch, state, accel):
-    state.generator.eval()
-    batch = util.prepare_batch(batch, accel.device)
-    signal = state.val_data.transform(
-        batch["signal"].clone(), **batch["transform_args"]
-    )
-
-    out = state.generator.get_val_audio(signal.audio_data)
-    recons = AudioSignal(out["audio"], signal.sample_rate)
-    inp = AudioSignal(signal.audio_data, signal.sample_rate)
-
-    return inp, recons, signal.sample_rate
 
 def get_units(batch):
     b, n, t = batch["signal"].shape
@@ -285,36 +270,16 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
 
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
-        recons = AudioSignal(out["audio"], signal.sample_rate)
+        target_pitch = out["target_pitch"]
+        predicted_pitch = out["predicted_pitch"]
         projected_z = out["projected_z"]
 
-        x_multiband = AudioSignal(rearrange(out["x_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
-        y_multiband = AudioSignal(rearrange(out["y_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
-
-        unit_loss = torch.nn.functional.cross_entropy(projected_z, target_units.type(torch.int64).to(recons.device))
-
-    if state.warmed_up:
-        with accel.autocast():
-            output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
-
-    if state.warmed_up and state.tracker.step % update_disc_every == 0:
-        state.optimizer_d.zero_grad()
-        accel.backward(output["adv/disc_loss"])
-        accel.scaler.unscale_(state.optimizer_d)
-        output["other/grad_norm_d"] = torch.nn.utils.clip_grad_norm_(
-            state.discriminator.parameters(), 10.0
-        )
-        accel.step(state.optimizer_d)
-        state.scheduler_d.step()
+        unit_loss = torch.nn.functional.cross_entropy(projected_z, target_units.type(torch.int64).to("cuda"))
+        prosody_loss = torch.nn.functional.l1_loss(predicted_pitch, target_pitch)
 
     with accel.autocast():
-        output["gen/multiband"] = state.stft_loss(y_multiband, x_multiband)
-        output["gen/stft"] = state.stft_loss(recons, signal)
-        output["gen/mel"] = state.mel_loss(recons, signal)
-        output["gen/waveform"] = state.waveform_loss(recons, signal)
         output["gen/unit"] = unit_loss
-        if state.warmed_up:
-           (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
+        output["gen/prosody"] = prosody_loss
         output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
 
     # -------------------------
@@ -331,7 +296,6 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
     accel.update()
 
     output["other/g_learning_rate"] = state.optimizer_g.param_groups[0]["lr"]
-    output["other/d_learning_rate"] = state.optimizer_d.param_groups[0]["lr"]
     output["other/batch_size"] = signal.batch_size * accel.world_size
 
     wandb.log({"loss": output})
@@ -347,7 +311,7 @@ def checkpoint(state, save_iters, save_path):
 
     tags = ["latest"]
     state.tracker.print(f"Saving to {str(Path('.').absolute())}")
-    if state.tracker.is_best("val", "mel/loss"):
+    if state.tracker.is_best("val", "prosody"):
         state.tracker.print(f"Best generator so far")
         tags.append("best")
     if state.tracker.step in save_iters:
@@ -378,44 +342,10 @@ def save_samples(state, val_idx, writer):
     state.tracker.print("Saving audio samples to TensorBoard")
     state.generator.eval()
 
-    samples = [state.val_data[idx] for idx in val_idx]
-    batch = state.val_data.collate(samples)
-    batch = util.prepare_batch(batch, accel.device)
-    signal = state.train_data.transform(
-        batch["signal"].clone(), **batch["transform_args"]
-    )
-
-    out = state.generator(signal.audio_data, signal.sample_rate)
-    recons = AudioSignal(out["audio"], signal.sample_rate)
-
-    audio_dict = {"recons": recons}
-    if state.tracker.step == 0:
-        audio_dict["signal"] = signal
-
-    for k, v in audio_dict.items():
-        for nb in range(v.batch_size):
-            v[nb].cpu().write_audio_to_tb(
-                f"{k}/sample_{nb}.wav", writer, state.tracker.step
-            )
-
 def validate(state, val_dataloader, accel):
     for batch in val_dataloader:
         output = val_loop(batch, state, accel)
         last_batch = batch
-
-    inp, recon, sr = get_audio(last_batch, state, accel)
-    inp = inp.audio_data.float()
-    recon = recon.audio_data.float()
-
-    audio = torch.cat([inp, recon], -1)
-    audio = list(map(lambda x: x.cpu(), audio))
-    audio_to_export = torch.cat(audio, 0)[:8].reshape(-1).numpy()
-
-    wandb.log({f"audio_val_{state.tracker.step}": 
-               wandb.Audio(audio_to_export,
-                           caption="audio",
-                           sample_rate=sr)
-            })
     
     # Consolidate state dicts if using ZeroRedundancyOptimizer
     if hasattr(state.optimizer_g, "consolidate_state_dict"):
@@ -441,11 +371,8 @@ def train(
     warmup: int = 50000,
     val_idx: list = [0, 1, 2, 3, 4, 5, 6, 7],
     lambdas: dict = {
-          "gen/mel": 12.0,
-          "gen/multiband": 3.0,
           "gen/unit": 1.0,
-          "adv/feat_loss": 2.0,
-          "adv/gen_loss": 1.0,
+          "gen/pitch": 1.0,
     },
 ):
     util.seed(seed)

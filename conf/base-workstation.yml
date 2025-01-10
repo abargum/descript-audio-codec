@@ -33,11 +33,8 @@ warmup: 35000
 val_idx: [0, 1, 2, 3, 4, 5, 6, 7]
 seed: 0
 lambdas:
-  gen/mel: 12.0
-  gen/multiband: 3.0
   gen/unit: 1.0
-  adv/feat_loss: 2.0
-  adv/gen_loss: 1.0
+  gen/prosody: 1.0
 
 VolumeNorm.db: [const, -16]
 

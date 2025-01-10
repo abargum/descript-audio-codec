@@ -146,7 +146,7 @@ def main():
     
     print("Processing content embeddings...")
     frames, labels = extract_content_emb(phrases, encoder, pqmf)
-    reduce_and_plot_tsne(frames, labels, name="images/tsne_frames.png")
+    reduce_and_plot_tsne(frames, labels, name="plots/tsne_frames.png")
     
     folder_path = "../vctk-small"
     num_files = 20
@@ -154,7 +154,7 @@ def main():
     print(f"Processing speaker embeddings...")
     random_files = get_random_files(folder_path, num_files)
     embeddings, labels = extract_speaker_emb(random_files, speaker_encoder, pqmf)
-    reduce_and_plot_tsne(embeddings, labels, name="images/tsne_speakers.png")
+    reduce_and_plot_tsne(embeddings, labels, name="plots/tsne_speakers.png")
 
 
 
