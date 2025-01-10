@@ -89,6 +89,7 @@ class ScriptedRAVE(nn_tilde.Module):
         self.yin = YIN(sr = self.sr, frame_time = 0.012)
 
         self.prev_speaker = 0
+        self.masuda_pitch = torch.jit.load("scripts/seanet2048.ts")
         self.p_tracker = PitchRegisterTracker2(target_mean=self.f0_means[2], target_std=self.f0_stds[2])
 
         self.resampler = None
@@ -183,9 +184,9 @@ class ScriptedRAVE(nn_tilde.Module):
         emb = self.speakers[2]
         
         in_length = x.shape[-1]
-        f0 = get_pitch(x, block_size=1025) #self.yin(x)
-        #f0 = get_pitch_viterbi(x.squeeze(1), block_size=1025, n_candidates=50, transition_weight=0.5) #self.yin(x)
-        #f0 = f0.unsqueeze(1)
+        #f0 = get_pitch(x, block_size=1025) #self.yin(x)
+        f0 = self.masuda_pitch(x).unsqueeze(1)
+
         shifted_pitch = self.p_tracker(f0)
         shifted_pitch *= p
         
