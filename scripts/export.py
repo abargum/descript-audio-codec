@@ -38,12 +38,32 @@ file_path = 'scripts/utils/speaker_emb_dict.pkl'
 with open(file_path, 'rb') as file:
     speaker_dict = pickle.load(file)
 
+"""
 target = 'p228'
+
 target_stats = speaker_dict[target]
 target_emb = target_stats['avg_emb']
 target_emb = torch.tensor(target_emb).unsqueeze(0).unsqueeze(-1)
 target_f0_mean = target_stats['f0_mean'] - 10
 taget_f0_std = target_stats['f0_std'] - 10
+"""
+
+targets = ['p226', 'p227', 'p228']
+
+emb_list = nn.ParameterList()
+f0_mean_list = []
+f0_std_list = []
+
+for speaker in targets:
+    target_stats = speaker_dict[speaker]
+    target_emb = torch.tensor(target_stats['avg_emb']).unsqueeze(0).unsqueeze(-1)
+    target_f0_mean = target_stats['f0_mean']
+    target_f0_std = target_stats['f0_std']
+
+    # Append data to the lists
+    emb_list.append(nn.Parameter(target_emb))
+    f0_mean_list.append(target_f0_mean)
+    f0_std_list.append(target_f0_std)
 
 class ScriptedRAVE(nn_tilde.Module):
 
@@ -62,10 +82,12 @@ class ScriptedRAVE(nn_tilde.Module):
         
         self.speaker_encoder = pretrained.speaker_encoder
         emb_audio_pqmf = self.pqmf(emb_audio)
-        self.speaker = target_emb #self.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
+        self.speakers = emb_list #self.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
+        self.f0_means = f0_mean_list
+        self.f0_stds = f0_std_list
 
         self.yin = YIN(sr = self.sr, frame_time = 0.012)
-        self.p_tracker = PitchRegisterTracker2(target_mean=188.81, target_std=39.20)
+        self.p_tracker = PitchRegisterTracker2(target_mean=self.f0_means[2], target_std=self.f0_stds[2])
 
         self.resampler = None
 
@@ -113,7 +135,7 @@ class ScriptedRAVE(nn_tilde.Module):
             in_channels=1,
             in_ratio=1,
             out_channels=2 if stereo else 1,
-            out_ratio=1024,
+            out_ratio=1,
             input_labels=['(signal) Input audio signal'],
             output_labels=[
                 f'(signal) Reconstructed audio signal {channel}'
@@ -136,17 +158,20 @@ class ScriptedRAVE(nn_tilde.Module):
     def forward(self, inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]):
 
         x, p, s = inputs
+
+        emb = self.speakers[2]
         
         in_length = x.shape[-1]
-        #f0 = get_pitch(x, block_size=1024) #self.yin(x)
-        f0 = get_pitch_viterbi(x.squeeze(1), block_size=1025, n_candidates=50, transition_weight=0.5) #self.yin(x)
-        f0 = f0.unsqueeze(1)
+        f0 = get_pitch(x, block_size=1025) #self.yin(x)
+        #f0 = get_pitch_viterbi(x.squeeze(1), block_size=1025, n_candidates=50, transition_weight=0.5) #self.yin(x)
+        #f0 = f0.unsqueeze(1)
         shifted_pitch = self.p_tracker(f0)
         shifted_pitch *= p
         
         x = self.pqmf(x)
         z = self.encoder(x[:, :6, :])
-        emb = self.speaker.repeat(z.shape[0], 1, z.shape[-1]) * s
+
+        emb = emb.repeat(z.shape[0], 1, z.shape[-1]) * s
         
         z = torch.cat((z, emb), dim=1)
         upp_factor = in_length // f0.shape[-1]
@@ -154,7 +179,7 @@ class ScriptedRAVE(nn_tilde.Module):
         y, harm = self.decoder(z, shifted_pitch.squeeze(1), upp_factor=upp_factor)
         y = self.pqmf.inverse(y)
         
-        return f0
+        return y
 
     @torch.jit.export
     def get_learn_target(self) -> bool:

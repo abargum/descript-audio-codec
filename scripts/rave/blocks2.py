@@ -14,6 +14,8 @@ import torch.nn.utils.weight_norm as wn
 
 import argbind
 
+conv_mode = 'causal'
+
 #@gin.configurable
 #@argbind.bind(without_prefix=True)  # Make `mode` configurable globally
 def normalization(module: nn.Module, mode: str = 'identity'):
@@ -68,7 +70,7 @@ class ResidualLayer(nn.Module):
                         dim,
                         kernel_size,
                         dilation=d,
-                        padding=cc.get_padding(kernel_size, dilation=d, mode='causal'),
+                        padding=cc.get_padding(kernel_size, dilation=d, mode=conv_mode),
                         cumulative_delay=cd,
                     )))
             cd = net[-1].cumulative_delay
@@ -101,7 +103,7 @@ class DilatedUnit(nn.Module):
                           dilation=dilation,
                           padding=cc.get_padding(
                               kernel_size,
-                              dilation=dilation, mode='causal'
+                              dilation=dilation, mode=conv_mode
                           ))),
             activation(dim),
             normalization(cc.Conv1d(dim, dim, kernel_size=1)),
@@ -167,7 +169,7 @@ class UpsampleLayer(nn.Module):
         else:
             net.append(
                 normalization(
-                    cc.Conv1d(in_dim, out_dim, 3, padding=cc.get_padding(3, mode='causal'))))
+                    cc.Conv1d(in_dim, out_dim, 3, padding=cc.get_padding(3, mode=conv_mode))))
 
         self.net = cc.CachedSequential(*net)
         self.cumulative_delay = self.net.cumulative_delay + cumulative_delay * ratio
@@ -214,7 +216,7 @@ class EncoderV2(nn.Module):
                     data_size,
                     capacity,
                     kernel_size=kernel_size * 2 + 1,
-                    padding=cc.get_padding(kernel_size * 2 + 1, mode='causal'),
+                    padding=cc.get_padding(kernel_size * 2 + 1, mode=conv_mode),
                 )),
         ]
 
@@ -246,7 +248,7 @@ class EncoderV2(nn.Module):
                         out_channels,
                         kernel_size=2 * r,
                         stride=r,
-                        padding=cc.get_padding(2 * r, r, mode='causal'),
+                        padding=cc.get_padding(2 * r, r, mode=conv_mode),
                     )))
 
             num_channels = out_channels
@@ -258,7 +260,7 @@ class EncoderV2(nn.Module):
                     num_channels,
                     latent_size * n_out,
                     kernel_size=kernel_size,
-                    padding=cc.get_padding(kernel_size, mode='causal'),
+                    padding=cc.get_padding(kernel_size, mode=conv_mode),
                 )))
 
         if recurrent_layer is not None:
@@ -556,7 +558,7 @@ class AddUpDownSampling(nn.Module):
                                  channels,
                                  kernel_size=kernel_size * 2,
                                  stride=kernel_size,
-                                 padding=cc.get_padding(kernel_size * 2, mode='causal'))
+                                 padding=cc.get_padding(kernel_size * 2, mode=conv_mode))
 
         sine_delay = self.ex_conv.cumulative_delay
         delays = [net_delay, sine_delay]
@@ -625,7 +627,7 @@ class GeneratorV2Sine(nn.Module):
                     latent_size,
                     num_channels,
                     kernel_size=kernel_size,
-                    padding=cc.get_padding(kernel_size, mode='causal'),
+                    padding=cc.get_padding(kernel_size, mode=conv_mode),
                 )), )
 
         for r, dilations in zip(ratios, dilations_list):
@@ -666,7 +668,7 @@ class GeneratorV2Sine(nn.Module):
                 num_channels,
                 data_size * 2 if amplitude_modulation else data_size,
                 kernel_size=kernel_size * 2 + 1,
-                padding=cc.get_padding(kernel_size * 2 + 1, mode='causal'),
+                padding=cc.get_padding(kernel_size * 2 + 1, mode=conv_mode),
             ))
 
         net.append(waveform_module)
