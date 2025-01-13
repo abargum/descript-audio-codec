@@ -28,6 +28,7 @@ from einops import rearrange
 from torchaudio.functional import resample
 import pickle
 from utils.custom_dataset import CustomAudioDataset
+from rave.pitch_loss import loss as pitch_loss_fn
 
 file_path = 'metadata.pkl'
 with open(file_path, 'rb') as file:
@@ -232,11 +233,17 @@ def val_loop(batch, state, accel):
     out = state.generator(signal.audio_data, signal.sample_rate)
     recons = AudioSignal(out["audio"], signal.sample_rate)
 
+    target_pitch = out["target_pitch"]
+    logits = out["logits"]
+    
+    pitch_loss = pitch_loss_fn(logits, target_pitch)
+
     return {
         "loss": state.mel_loss(recons, signal),
         "mel/loss": state.mel_loss(recons, signal),
         "stft/loss": state.stft_loss(recons, signal),
         "waveform/loss": state.waveform_loss(recons, signal),
+        "pitch/loss": pitch_loss,
     }
 
 @torch.no_grad()
@@ -293,6 +300,10 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
 
         unit_loss = torch.nn.functional.cross_entropy(projected_z, target_units.type(torch.int64).to(recons.device))
 
+        target_pitch = out["target_pitch"]
+        logits = out["logits"]    
+        pitch_loss = pitch_loss_fn(logits, target_pitch)
+
     if state.warmed_up:
         with accel.autocast():
             output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
@@ -313,6 +324,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         output["gen/mel"] = state.mel_loss(recons, signal)
         output["gen/waveform"] = state.waveform_loss(recons, signal)
         output["gen/unit"] = unit_loss
+        output["gen/pitch"] = pitch_loss
         if state.warmed_up:
            (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
         output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
@@ -444,6 +456,7 @@ def train(
           "gen/mel": 12.0,
           "gen/multiband": 3.0,
           "gen/unit": 1.0,
+          "gen/pitch": 0.5,
           "adv/feat_loss": 2.0,
           "adv/gen_loss": 1.0,
     },

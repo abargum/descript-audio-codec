@@ -9,12 +9,13 @@ import torch.nn as nn
 from torch.nn.utils import weight_norm
 from torchaudio.transforms import Spectrogram
 from torch.nn import functional as F
+import math
 
 import torch.nn.utils.weight_norm as wn
 
 import argbind
 
-conv_mode = 'causal'
+conv_mode = 'centered'
 
 #@gin.configurable
 #@argbind.bind(without_prefix=True)  # Make `mode` configurable globally
@@ -292,135 +293,51 @@ def leaky_relu(dim: int, alpha: float):
     return nn.LeakyReLU(alpha)
 
 
-class SineGen(torch.nn.Module):
-    """Sine Wave Generator with Phase Continuity"""
-    def __init__(
-        self,
-        samp_rate,
-        harmonic_num=0,
-        sine_amp=0.1,
-        noise_std=0.003,
-        voiced_threshold=0,
-        flag_for_pulse=False,
-    ):
-        super(SineGen, self).__init__()
-        self.sine_amp = sine_amp
-        self.noise_std = noise_std
-        self.harmonic_num = harmonic_num
-        self.dim = self.harmonic_num + 1
-        self.sampling_rate = samp_rate
-        self.voiced_threshold = voiced_threshold
-        
-        self.prev_phase = None 
-
-    def _f02uv(self, f0):
-        """Generate voiced/unvoiced (UV) signal"""
-        uv = torch.ones_like(f0)
-        uv = uv * (f0 > self.voiced_threshold)
-        return uv
-
-    def forward(self, f0: torch.Tensor, upp: int):
-        """
-        Args:
-        f0: Tensor of shape (batchsize, length), fundamental frequency
-        upp: Upsampling factor
-        
-        Returns:
-        sine_waves: Generated sine waves with phase continuity
-        uv: Voiced/unvoiced tensor
-        noise: Generated noise tensor
-        """
-        with torch.no_grad():
-
-            batch_size = f0.size(0)
-            f0 = f0[:, None].transpose(1, 2)  # (batch, 1, length)
-            f0_buf = torch.zeros(f0.shape[0], f0.shape[1], self.dim, device=f0.device)
-            
-            f0_buf[:, :, 0] = f0[:, :, 0]
-            for idx in range(self.harmonic_num):
-                f0_buf[:, :, idx + 1] = f0_buf[:, :, 0] * (idx + 2)
-            
-            rad_values = (f0_buf / self.sampling_rate) * 2 * torch.pi
-            rad_values = F.interpolate(rad_values.transpose(2, 1),
-                                       scale_factor=float(upp),
-                                       mode="nearest").transpose(2, 1)
-            
-            # Initialize the phase if not already done
-            if self.prev_phase is None or self.prev_phase.size(0) != batch_size:
-                # Reset the previous phase to match the new batch size
-                self.prev_phase = torch.zeros(batch_size, f0_buf.shape[2], device=f0.device)
-            
-            phase_accum = torch.cumsum(rad_values, dim=1) + self.prev_phase.unsqueeze(1)
-            phase_accum = phase_accum % (2 * torch.pi)
-            
-            # Update the previous phase for continuity in the next forward pass
-            self.prev_phase = phase_accum[:, -1, :].clone()
-            
-            # Generate sine waves using the cumulative phase
-            sine_waves = torch.sin(phase_accum)
-            sine_waves = sine_waves * self.sine_amp
-            
-            # Generate voiced/unvoiced signal
-            uv = self._f02uv(f0) 
-            uv = F.interpolate(uv.transpose(2, 1), scale_factor=float(upp), mode="nearest").transpose(2, 1)
-            
-            # Add noise to the sine waves
-            noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
-            noise = noise_amp * torch.randn_like(sine_waves)
-            
-            # Combine sine waves and noise
-            sine_waves = sine_waves * uv + noise
-        
-        return sine_waves, uv, noise
-
-
-class SourceModuleHnNSF(torch.nn.Module):
-    """SourceModule for hn-nsf
-    SourceModule(sampling_rate, harmonic_num=0, sine_amp=0.1,
-                 add_noise_std=0.003, voiced_threshod=0)
-    sampling_rate: sampling_rate in Hz
-    harmonic_num: number of harmonic above F0 (default: 0)
-    sine_amp: amplitude of sine source signal (default: 0.1)
-    add_noise_std: std of additive Gaussian noise (default: 0.003)
-        note that amplitude of noise in unvoiced is decided
-        by sine_amp
-    voiced_threshold: threhold to set U/V given F0 (default: 0)
-    Sine_source, noise_source = SourceModuleHnNSF(F0_sampled)
-    F0_sampled (batchsize, length, 1)
-    Sine_source (batchsize, length, 1)
-    noise_source (batchsize, length 1)
-    uv (batchsize, length, 1)
+class SignalGenerator(torch.nn.Module):
+    """Additive sinusoidal, subtractive filtered noise signal generator.
     """
+    def __init__(self, scale: int, sr: int):
+        """Initializer.
+        Args:
+            scale: upscaling factor.
+            sr: sampling rate.
+        """
+        super().__init__()
+        self.sr = sr
+        self.upsampler = torch.nn.Upsample(scale_factor=scale, mode='linear')
+        self.register_buffer("phase", torch.zeros(1))
 
-    def __init__(
-        self,
-        sampling_rate,
-        harmonic_num=0,
-        sine_amp=0.1,
-        add_noise_std=0.003,
-        voiced_threshod=0,
-        is_half=True,
-    ):
-        super(SourceModuleHnNSF, self).__init__()
-
-        self.sine_amp = sine_amp
-        self.noise_std = add_noise_std
-        self.is_half = is_half
-        # to produce sine waveforms
-        self.l_sin_gen = SineGen(
-            sampling_rate, harmonic_num, sine_amp, add_noise_std, voiced_threshod
-        )
-
-        # to merge source harmonics into a single excitation
-        #self.l_linear = torch.nn.Linear(harmonic_num + 1, 1)
-        self.l_tanh = torch.nn.Tanh()
-
-    def forward(self, x: torch.Tensor, upp: int = 1):
-        sine_wavs, uv, _ = self.l_sin_gen(x, upp)
-        #sine_wavs = sine_wavs.to(dtype=self.l_linear.weight.dtype)
-        #sine_merge = self.l_tanh(self.l_linear(sine_wavs))
-        sine_merge = self.l_tanh(sine_wavs)
-        return sine_merge, None, None  # noise, uv
+    def forward(self,
+                pitch: torch.Tensor,
+                p_amp: torch.Tensor,
+                ap_amp: torch.Tensor,
+                noise: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Generate the signal.
+        Args:
+            pitch: [torch.float32; [B, N]], frame-level pitch sequence.
+            p_amp, ap_amp: [torch.float32; [B, N]], periodical, aperiodical amplitude.
+            noise: [torch.float32; [B, T]], predefined noise, if provided.
+        Returns:
+            [torch.float32; [B, T(=N x scale)]], base signal.
+        """
+        # [B, T]
+        pitch = self.upsampler(pitch[:, None]).squeeze(dim=1)
+        p_amp = self.upsampler(p_amp[:, None]).squeeze(dim=1)
+        # [B, T]
+        phase = torch.cumsum(2 * np.pi * pitch / self.sr, dim=-1)
+        phase = phase + self.phase
+        self.phase.copy_(phase[0, -1] % (2 * math.pi))
+        
+        # [B, T]
+        x = p_amp * torch.sin(phase)
+        # [B, T]
+        ap_amp = self.upsampler(ap_amp[:, None]).squeeze(dim=1)
+        if noise is None:
+            # [B, T], U[-1, 1] sampled
+            noise = torch.rand_like(x) * 2. - 1.
+        # [B, T]
+        y = ap_amp * noise
+        return (x + y) * 0.25
 
 
 class AddUpDownSampling(nn.Module):
@@ -485,8 +402,7 @@ class GeneratorV2Sine(nn.Module):
         else:
             num_channels = 2**len(ratios) * capacity
 
-        self.m_source = SourceModuleHnNSF(
-            sampling_rate=sampling_rate, harmonic_num=0)
+        self.m_source = SignalGenerator(scale=1024, sr=44100)
 
         self.conditioning_stages = [2, 6, 11, 16]
 
@@ -568,10 +484,12 @@ class GeneratorV2Sine(nn.Module):
 
         self.amplitude_modulation = amplitude_modulation
 
-    def forward(self, x: torch.Tensor, f0: torch.Tensor, upp_factor: int = 1024) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor,
+                f0: torch.Tensor,
+                ap: torch.Tensor,
+                aap: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        har_source, noi_source, uv = self.m_source(f0, upp_factor)
-        har_source = har_source.transpose(1, 2)
+        har_source = self.m_source(f0, ap, aap).unsqueeze(1)
         
         iterator = 0
 

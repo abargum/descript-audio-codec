@@ -14,7 +14,7 @@ import torch.nn.utils.weight_norm as wn
 
 import argbind
 
-conv_mode = 'causal'
+conv_mode = 'centered'
 
 #@gin.configurable
 #@argbind.bind(without_prefix=True)  # Make `mode` configurable globally
@@ -183,6 +183,156 @@ def normalize_dilations(dilations: Union[Sequence[int],
     if isinstance(dilations[0], int):
         dilations = [dilations for _ in ratios]
     return dilations
+
+def exponential_sigmoid(x: torch.Tensor) -> torch.Tensor:
+    return 2.0 * torch.sigmoid(x) ** np.log(10) + 1e-7
+
+
+class ConditionalLayerNorm(nn.Module):
+    def __init__(self, embedding_dim: int, normalize_embedding: bool = True):
+        super(ConditionalLayerNorm, self).__init__()
+        self.normalize_embedding = normalize_embedding
+
+        self.linear_scale = nn.Linear(embedding_dim, 1)
+        self.linear_bias = nn.Linear(embedding_dim, 1)
+
+    def forward(self, x, embedding):
+        if self.normalize_embedding:
+            embedding = torch.nn.functional.normalize(embedding, p=2, dim=-1)
+        scale = self.linear_scale(embedding).unsqueeze(-1)  # shape: (B, 1, 1)
+        bias = self.linear_bias(embedding).unsqueeze(-1)  # shape: (B, 1, 1)
+
+        out = (x - torch.mean(x, dim=-1, keepdim=True)) / torch.var(x, dim=-1, keepdim=True)
+        out = scale * out + bias
+        return out
+
+
+class PitchEncoderV2(nn.Module):
+
+    def __init__(
+        self,
+        data_size: int,
+        capacity: int,
+        ratios: Sequence[int],
+        latent_size: int,
+        n_out: int,
+        kernel_size: int,
+        dilations: Sequence[int],
+        keep_dim: bool = False,
+        recurrent_layer: Optional[Callable[[], nn.Module]] = None,
+        spectrogram: Optional[Callable[[], Spectrogram]] = None,
+        activation: Callable[[int], nn.Module] = lambda dim: nn.LeakyReLU(.2),
+        adain: Optional[Callable[[int], nn.Module]] = None,
+    ) -> None:
+        super().__init__()
+        dilations_list = normalize_dilations(dilations, ratios)
+
+        if spectrogram is not None:
+            self.spectrogram = spectrogram()
+        else:
+            self.spectrogram = None
+
+        self.conditioning_stages = [5, 10, 15, 19]
+
+        net = [
+            normalization(
+                cc.Conv1d(
+                    data_size,
+                    capacity,
+                    kernel_size=kernel_size * 2 + 1,
+                    padding=cc.get_padding(kernel_size * 2 + 1, mode=conv_mode),
+                )),
+        ]
+
+        num_channels = capacity
+        for r, dilations in zip(ratios, dilations_list):
+            # ADD RESIDUAL DILATED UNITS
+            for d in dilations:
+                if adain is not None:
+                    net.append(adain(dim=num_channels))
+                net.append(
+                    Residual(
+                        DilatedUnit(
+                            dim=num_channels,
+                            kernel_size=kernel_size,
+                            dilation=d,
+                        )))
+
+            # ADD DOWNSAMPLING UNIT
+            net.append(activation(num_channels))
+
+            if keep_dim:
+                out_channels = num_channels * r
+            else:
+                out_channels = num_channels * 2
+            net.append(
+                normalization(
+                    cc.Conv1d(
+                        num_channels,
+                        out_channels,
+                        kernel_size=2 * r,
+                        stride=r,
+                        padding=cc.get_padding(2 * r, r, mode=conv_mode),
+                    )))
+
+            num_channels = out_channels
+
+        net.append(activation(num_channels))
+        net.append(
+            normalization(
+                cc.Conv1d(
+                    num_channels,
+                    latent_size * n_out,
+                    kernel_size=kernel_size,
+                    padding=cc.get_padding(kernel_size, mode=conv_mode),
+                )))
+
+        if recurrent_layer is not None:
+            net.append(recurrent_layer(latent_size * n_out))
+
+        self.net = cc.CachedSequential(*net)
+
+        self.pitch_head = cc.Conv1d(latent_size * n_out,
+                                    1440,
+                                    kernel_size=1,
+                                    padding=cc.get_padding(1, mode=conv_mode))
+
+        self.ap_head = cc.Conv1d(latent_size * n_out,
+                                 1,
+                                 kernel_size=1,
+                                 padding=cc.get_padding(1, mode=conv_mode))
+
+        self.aap_head = cc.Conv1d(latent_size * n_out,
+                                 1,
+                                 kernel_size=1,
+                                 padding=cc.get_padding(1, mode=conv_mode))
+
+        self.conditioning_layers = nn.ModuleList()
+        for i in enumerate(self.conditioning_stages):
+            self.conditioning_layers.append(ConditionalLayerNorm(embedding_dim=258))
+
+    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+        if self.spectrogram is not None:
+            x = self.spectrogram(x[:, 0])[..., :-1]
+            x = torch.log1p(x)
+
+        for i, layer in enumerate(self.net):
+            if i == 5:
+                x = self.conditioning_layers[0](x, emb)
+            elif i == 10:
+                x = self.conditioning_layers[1](x, emb)
+            elif i == 15:
+                x = self.conditioning_layers[2](x, emb)
+            elif i == 19:
+                x = self.conditioning_layers[3](x, emb)
+
+            x = layer(x)
+
+        logits = self.pitch_head(x)
+        ap = exponential_sigmoid(self.ap_head(x))
+        aap = exponential_sigmoid(self.aap_head(x))
+
+        return logits, ap, aap
 
 
 class EncoderV2(nn.Module):
