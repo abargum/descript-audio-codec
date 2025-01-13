@@ -300,6 +300,7 @@ class EncoderV2(nn.Module):
         n_out: int,
         kernel_size: int,
         dilations: Sequence[int],
+        is_pitch_encoder = False,
         keep_dim: bool = False,
         recurrent_layer: Optional[Callable[[], nn.Module]] = None,
         spectrogram: Optional[Callable[[], Spectrogram]] = None,
@@ -313,6 +314,8 @@ class EncoderV2(nn.Module):
             self.spectrogram = spectrogram()
         else:
             self.spectrogram = None
+
+        self.is_pitch_encoder = is_pitch_encoder
 
         net = [
             normalization(
@@ -370,7 +373,16 @@ class EncoderV2(nn.Module):
         if recurrent_layer is not None:
             net.append(recurrent_layer(latent_size * n_out))
 
+        #if self.is_pitch_encoder:
+            #net.append(nn.ReLU())
+
         self.net = cc.CachedSequential(*net)
+
+        if self.is_pitch_encoder:
+            self.pitch_head = cc.Conv1d(latent_size * n_out,
+                                        1440,
+                                        kernel_size=1,
+                                        padding=cc.get_padding(1, mode=conv_mode))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.spectrogram is not None:
@@ -378,7 +390,12 @@ class EncoderV2(nn.Module):
             x = torch.log1p(x)
 
         x = self.net(x)
-        return x
+
+        #If pitch encoder return output before head for Ap and Aap
+        if self.is_pitch_encoder:
+            return self.pitch_head(x), x
+        else:
+            return x
 
 
 class Snake(nn.Module):

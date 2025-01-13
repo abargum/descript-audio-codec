@@ -1,5 +1,7 @@
 import torch
 from .penn_utils import *
+import torch.nn.functional as F
+
 
 def loss(logits, bins):
     """Compute loss function"""
@@ -47,3 +49,16 @@ def loss(logits, bins):
     else:
 
         raise ValueError(f'Loss {LOSS} is not implemented')
+
+def self_supervised_loss(pred_f0, pred_f0_shift, shift):
+    #pred_f0 = torch.argmax(logits1, dim=1)
+    #pred_f0_shift = torch.argmax(logits2, dim=1)
+
+    # pitch consistency
+    pitch_loss = F.huber_loss(
+        pred_f0_shift.log2() + 0.5 * shift,
+        pred_f0.log2(),
+        delta=1.0)
+
+    return pitch_loss
+    

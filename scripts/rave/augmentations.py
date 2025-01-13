@@ -4,7 +4,7 @@ from typing import Dict
 import torch
 import julius
 import torch.nn as nn
-from torch_pitch_shift import pitch_shift, semitones_to_ratio, get_fast_shifts
+from torch_pitch_shift import pitch_shift, semitones_to_ratio, get_fast_shifts, ratio_to_semitones
 import torchaudio.functional as F
 
 def calculate_rms(samples):
@@ -151,7 +151,7 @@ class PEQAug(torch.nn.Module):
 
 # Based on torch-audiomentations (MIT License)
 class PitchAug(nn.Module):
-    def __init__(self, sample_rate, shift_range=[-6, 6]) -> None:
+    def __init__(self, sample_rate, shift_range=[-12, 12]) -> None:
         super().__init__()
         self.sample_rate = sample_rate
         self._fast_shifts = get_fast_shifts(
@@ -171,7 +171,7 @@ class PitchAug(nn.Module):
         # shifted f0
         if "f0" in data:
             transformed["f0"] = data["f0"] * float(shift)
-        return transformed
+        return transformed, ratio_to_semitones(shift)
 
 
 class VolumeAug(nn.Module):

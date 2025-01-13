@@ -25,7 +25,7 @@ class RAVE(BaseModel):
     def __init__(
         self,
         latent_size = 64,
-        capacity = 64,
+        capacity = 32,
         sampling_rate = 44100,
         valid_signal_crop = True):
         super().__init__()
@@ -35,11 +35,11 @@ class RAVE(BaseModel):
         self.encoder = EncoderV2(data_size = 6,
                                  capacity = capacity,
                                  ratios = [4, 4, 2, 2],
-                                 latent_size = 1440,
+                                 latent_size = latent_size,
                                  n_out = 1,
                                  kernel_size = 3,
-                                 dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]]
-        ).to('cuda')
+                                 dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]],
+                                 is_pitch_encoder = True).to('cuda')
 
     def forward(self,
                 audio_data: torch.Tensor,
@@ -49,14 +49,15 @@ class RAVE(BaseModel):
         length = audio_data.shape[-1]
 
         audio_multiband = pqmf(audio_data)
-        logits = self.encoder(audio_multiband[:, :6, :])
+        logits, _ = self.encoder(audio_multiband[:, :6, :])
        
         with torch.no_grad():
             f0 = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
             f0 = f0.transpose(2, 1) #B, C, F
 
         if get_pitch:
-            pred_f0 = bins_to_frequency(logits)
+            pred_f0 = torch.argmax(logits, dim=1)
+            pred_f0 = bins_to_frequency(pred_f0)
         else:
             pred_f0 = None
 

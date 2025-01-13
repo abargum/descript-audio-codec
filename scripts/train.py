@@ -232,7 +232,7 @@ def val_loop(batch, state, accel):
         batch["signal"].clone(), **batch["transform_args"]
     )
 
-    out = state.generator(signal.audio_data, signal.sample_rate)
+    out = state.generator(signal.audio_data, sample_rate=signal.sample_rate)
     
     target_pitch = out["target_pitch"]
     logits = out["logits"]
@@ -283,8 +283,8 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         )
 
     with accel.autocast():
-        out = state.generator(signal.audio_data, signal.sample_rate)
-        out = state.generator(signal.audio_data, signal.sample_rate)
+        out = state.generator(signal.audio_data, sample_rate=signal.sample_rate)
+        out = state.generator(signal.audio_data, sample_rate=signal.sample_rate)
     
         target_pitch = out["target_pitch"]
         logits = out["logits"]
