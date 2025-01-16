@@ -29,7 +29,7 @@ save_iters: [10000, 50000, 100000, 200000, 300000, 400000, 500000, 600000, 70000
 valid_freq: 10000
 sample_freq: 10000
 num_workers: 32 #overwritten in gpu yml
-warmup: 35000
+warmup: 100000
 val_idx: [0, 1, 2, 3, 4, 5, 6, 7]
 seed: 0
 lambdas:
@@ -71,14 +71,14 @@ train/AudioDataset.n_examples: 10000000
 train/build_dataset.duration: 1.486078
 train/build_dataset.folders:
   music_hq:
-    - vctk-small
+    - VCTK-Corpus/wav48
 
 val/build_transform.augment_prob: 1.0
-val/AudioDataset.n_examples: 10
+val/AudioDataset.n_examples: 1000
 val/build_dataset.duration: 1.486078
 val/build_dataset.folders:
   music_hq:
-    - val-set-test
+    - VCTK-Val
 
 test/build_transform.augment_prob: 1.0
 test/AudioDataset.n_examples: 100

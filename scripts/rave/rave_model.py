@@ -193,7 +193,7 @@ class RAVE(BaseModel):
             f0_fcpe = f0_fcpe.transpose(2, 1) #B, C, T (B, 1, 128)
             f0_mean, f0_std = torch.std_mean(f0_fcpe, dim=-1)
 
-        logits, ap, aap = self.pitch_encoder(audio_multiband[:, :6, :],
+        logits, ap, aap = self.pitch_encoder(target_multiband[:, :6, :],
                                              torch.cat((emb, f0_mean, f0_std), dim=-1))
 
         f0 = torch.argmax(logits, dim=1)
@@ -211,6 +211,7 @@ class RAVE(BaseModel):
         y = pqmf.inverse(y_multiband)
         
         return {"audio": y[..., :length],
+                "nsf_source": nsf_source,
                 "pitch": f0,
                 "ap": ap,
                 "aap": aap}

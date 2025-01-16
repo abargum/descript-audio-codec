@@ -71,8 +71,8 @@ def process_audio_directory(base_dirs, output_path, sample_rate):
 
 # Example usage
 base_directories = [
-    "vctk-small",
-    "val-set-test",
+    "VCTK-Corpus/wav48",
+    "VCTK-Val",
 ]
 sample_rate = 44100
 output_file = "metadata.pkl"
