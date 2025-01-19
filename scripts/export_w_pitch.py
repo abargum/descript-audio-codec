@@ -17,7 +17,9 @@ from absl import flags
 import librosa
 import pickle
 from rave.rave_model import RAVE
+from rave.pitch_enc import PitchEncoderV2
 from utils.utils import load_dict_from_txt
+from rave.pitch import *
 
 import rave.blocks
 import rave.resampler
@@ -37,16 +39,6 @@ info_dict = load_dict_from_txt(file)
 file_path = 'scripts/utils/speaker_emb_dict.pkl'
 with open(file_path, 'rb') as file:
     speaker_dict = pickle.load(file)
-
-"""
-target = 'p228'
-
-target_stats = speaker_dict[target]
-target_emb = target_stats['avg_emb']
-target_emb = torch.tensor(target_emb).unsqueeze(0).unsqueeze(-1)
-target_f0_mean = target_stats['f0_mean'] - 10
-taget_f0_std = target_stats['f0_std'] - 10
-"""
 
 targets = ['p226', 'p227', 'p228']
 
@@ -69,6 +61,7 @@ class ScriptedRAVE(nn_tilde.Module):
 
     def __init__(self,
                  pretrained,
+                 pitch_enc,
                  stereo: bool,
                  target_sr: bool = None) -> None:
         super().__init__()
@@ -79,6 +72,8 @@ class ScriptedRAVE(nn_tilde.Module):
         self.pqmf = pretrained.pqmf
         self.encoder = pretrained.encoder
         self.decoder = pretrained.decoder
+
+        self.pitch_encoder = pitch_enc
         
         self.speaker_encoder = pretrained.speaker_encoder
         emb_audio_pqmf = self.pqmf(emb_audio)
@@ -183,18 +178,27 @@ class ScriptedRAVE(nn_tilde.Module):
         emb = self.speakers[2]
         
         in_length = x.shape[-1]
-        f0 = get_pitch(x, block_size=1025) #self.yin(x)
-
-        shifted_pitch = self.p_tracker(f0)
-        shifted_pitch *= p
+        #f0 = get_pitch(x, block_size=1024) #self.yin(x)
         
         x = self.pqmf(x)
+
+        logits = self.pitch_encoder(x[:, :6, :])
+        periodicity = entropy(logits)
+        uv = threshold(periodicity, 0.065)
+        
+        f0_pred = torch.argmax(logits, dim=1)
+        f0_pred = bins_to_frequency(f0_pred)
+        f0_pred = (f0_pred * uv).unsqueeze(1)
+
+        shifted_pitch = self.p_tracker(f0_pred)
+        shifted_pitch *= p
+        
         z = self.encoder(x[:, :6, :])
 
         emb = emb.repeat(z.shape[0], 1, z.shape[-1]) * s
         
         z = torch.cat((z, emb), dim=1)
-        upp_factor = in_length // f0.shape[-1]
+        upp_factor = in_length // f0_pred.shape[-1]
         
         y, harm = self.decoder(z, shifted_pitch.squeeze(1), upp_factor=upp_factor)
         y = self.pqmf.inverse(y)
@@ -259,6 +263,17 @@ def main():
     generator.to(torch.device('cpu'))
     generator.eval()
 
+    pitch_encoder = PitchEncoderV2(data_size = 6,
+                                   capacity = 32,
+                                   ratios = [4, 4, 2, 2],
+                                   latent_size = 1440,
+                                   n_out = 1,
+                                   kernel_size = 3,
+                                   dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]])
+
+    pitch_encoder.load_state_dict(torch.load(f"{args.run}non-caus.pth", weights_only=True))
+    pitch_encoder.eval()
+
     stereo = False
     sample_rate = generator.sample_rate
 
@@ -267,21 +282,25 @@ def main():
     y = generator.predict(x, x)
     print("Shape of test output:", y.shape)
 
-    """
-    for m in pretrained.modules():
+    for m in generator.modules():
         if hasattr(m, "weight_g"):
             nn.utils.remove_weight_norm(m)
-    """
+
+    for m in pitch_encoder.modules():
+        if hasattr(m, "weight_g"):
+            nn.utils.remove_weight_norm(m)
 
     script_class = ScriptedRAVE
     scripted_rave = script_class(
         pretrained=generator,
+        pitch_enc=pitch_encoder,
         stereo=stereo,
         target_sr=sample_rate,
     )
 
     # ------ FOR TEST ------
-    x, sr = librosa.load("audio/male.wav", sr=44100, mono=True)
+    #x, sr = librosa.load("audio/male.wav", sr=44100, mono=True)
+    x, sr = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
     x = torch.tensor(x[:1*131072]).unsqueeze(0).unsqueeze(0)
     chunk_size = 2048
     num_chunks = (x.shape[-1] + chunk_size - 1) // chunk_size

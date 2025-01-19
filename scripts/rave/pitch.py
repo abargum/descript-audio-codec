@@ -33,3 +33,30 @@ def extract_f0_mean_std(f0s: torch.Tensor):
     f0s_mean = torch.mean(f0s)
     f0s_std = torch.std(f0s)
     return f0s_mean, f0s_std
+
+def entropy(logits: torch.Tensor):
+    """Entropy-based periodicity - Low entropy indicates high periodicity"""
+    distribution = torch.nn.functional.softmax(logits, dim=1)
+    return (
+        1 + 1 / math.log(1440) * \
+        (distribution * torch.log(distribution + 1e-7)).sum(dim=1))
+
+def threshold(periodicity: torch.Tensor, value: float=0.065):
+    """Threshold periodicity to produce voiced/unvoiced classifications"""
+    return periodicity > value
+
+def bins_to_cents(bins: torch.Tensor):
+    """Converts pitch bins to cents"""
+    return 5.0 * bins
+
+def bins_to_frequency(bins: torch.Tensor):
+    """Converts pitch bins to frequency in Hz"""
+    return cents_to_frequency(bins_to_cents(bins))
+
+def cents_to_frequency(cents: torch.Tensor):
+    """Converts cents to frequency in Hz"""
+    return 31.0 * 2 ** (cents / 1200)
+
+def cents(a: torch.Tensor, b: torch.Tensor):
+    """Compute pitch difference in cents"""
+    return 1200 * torch.log2(a / b)

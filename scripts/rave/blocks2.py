@@ -14,7 +14,7 @@ import torch.nn.utils.weight_norm as wn
 
 import argbind
 
-conv_mode = 'causal'
+conv_mode = 'centered'
 
 #@gin.configurable
 #@argbind.bind(without_prefix=True)  # Make `mode` configurable globally
