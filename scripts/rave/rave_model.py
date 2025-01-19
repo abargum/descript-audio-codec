@@ -1,8 +1,9 @@
-from .pitch import get_f0_fcpe, extract_f0_mean_std
 from .blocks import GeneratorV2Sine
 from .blocks2 import SpeakerRAVE, EncoderV2
 from .pqmf import CachedPQMF as PQMF
+from .pitch_enc import PitchEncoderV2
 from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
+from .pitch import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_loudness
 
 import gin
 import numpy as np
@@ -15,6 +16,8 @@ import librosa
 
 emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
 emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
+
+pqmf = PQMF(attenuation = 100, n_band = 16).to('cuda')
 
 class CrossEntropyProjection(nn.Module):
     def __init__(self):
@@ -40,8 +43,6 @@ class RAVE(BaseModel):
 
         self.sample_rate = sampling_rate
 
-        self.pqmf = PQMF(attenuation = 100, n_band = 16)
-
         self.encoder = EncoderV2(data_size = 6,
                                  capacity = capacity,
                                  ratios = [4, 4, 2, 2],
@@ -59,6 +60,18 @@ class RAVE(BaseModel):
                                        sampling_rate = sampling_rate,
                                        dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]]
         )
+
+        self.pitch_encoder = PitchEncoderV2(data_size = 6,
+                                            capacity = 32,
+                                            ratios = [4, 4, 2, 2],
+                                            latent_size = 1440,
+                                            n_out = 1,
+                                            kernel_size = 3,
+                                            dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]])
+
+        self.pitch_encoder.load_state_dict(torch.load(f"scripts/utils/non-caus_pitch_enc.pth",
+                                                      weights_only=True))
+        self.pitch_encoder.eval()
 
         self.speaker_encoder = SpeakerRAVE()
         spk_state, pqmf_state = self.load_speaker_statedict("scripts/rave/model000000075.model")
@@ -107,11 +120,17 @@ class RAVE(BaseModel):
         
         length = audio_data.shape[-1]
 
-        f0 = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
-        f0 = f0[:, :, 0]
+        audio_multiband = pqmf(audio_data)
+        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])
+        
+        f0 = torch.argmax(pitch_logits, dim=1)
+        f0 = bins_to_frequency(f0)
+        periodicity = entropy(pitch_logits)
 
-        audio_multiband = self.pqmf(audio_data)
-        audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
+        loudness = extract_loudness(audio_data, sr=self.sample_rate)
+        loudness = (10 ** (loudness / 20))
+        
+        audio_multiband_aug = pqmf(audio_aug.unsqueeze(1))
         z = self.encoder(audio_multiband_aug[:, :6, :])
 
         projected_z = self.ce_projection(z)
@@ -120,8 +139,14 @@ class RAVE(BaseModel):
             emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
 
-        y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb), dim=1), f0)
-        y = self.pqmf.inverse(y_multiband)
+        z_cat = torch.cat((z.detach(), emb), dim=1)
+
+        y_multiband, nsf_source = self.decoder(z_cat,
+                                               f0.unsqueeze(1),
+                                               periodicity.unsqueeze(1),
+                                               loudness.unsqueeze(1))
+        
+        y = pqmf.inverse(y_multiband)
         
         return {
             "audio": y[..., :length],
@@ -134,50 +159,30 @@ class RAVE(BaseModel):
     def get_val_audio(self, audio_data: torch.Tensor):
         
         length = audio_data.shape[-1]
+        
+        audio_multiband = pqmf(audio_data)
+        
+        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])
+        f0 = torch.argmax(pitch_logits, dim=1)
+        f0 = bins_to_frequency(f0)
+        periodicity = entropy(pitch_logits)   
 
-        f0 = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
-        f0 = f0[:, :, 0]
-
-        audio_multiband = self.pqmf(audio_data)
+        loudness = extract_loudness(audio_data, sr=self.sample_rate)
+        loudness = (10 ** (loudness / 20))
+        
         z = self.encoder(audio_multiband[:, :6, :])
        
         with torch.no_grad():
             emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
 
-        y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb), dim=1), f0)
-        y = self.pqmf.inverse(y_multiband)
+        z_cat = torch.cat((z.detach(), emb), dim=1)
+
+        y_multiband, nsf_source = self.decoder(z_cat,
+                                               f0.unsqueeze(1),
+                                               periodicity.unsqueeze(1),
+                                               loudness.unsqueeze(1))
+        
+        y = pqmf.inverse(y_multiband)
         
         return {"audio": y[..., :length]}
-
-    def predict(self, audio_data: torch.Tensor, target: torch.Tensor):
-
-        length = audio_data.shape[-1]
-
-        f0_in = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
-        f0_in = f0_in[:, :, 0]
-        in_med, in_std = extract_f0_mean_std(f0_in)
-        
-        f0_target = get_f0_fcpe(target.squeeze(1), self.sample_rate, 1024)
-        f0_target = f0_target[:, :, 0]
-        tar_med, tar_std = extract_f0_mean_std(f0_target)
-        
-        audio_multiband = self.pqmf(audio_data)
-        target_multiband = self.pqmf(target)
-        z = self.encoder(audio_multiband[:, :6, :])
-
-        with torch.no_grad():
-            emb = self.speaker_encoder(target_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z.shape[-1])
-
-        f0_in[f0_in == 0] = float('nan')
-        
-        standardized_source_pitch = (f0_in - in_med.to(f0_in)) / in_std.to(f0_in)
-        source_pitch = (standardized_source_pitch * torch.tensor(35).to(f0_in)) + torch.tensor(200).to(f0_in)
-        source_pitch = source_pitch * 1.0
-        source_pitch[torch.isnan(source_pitch)] = 0
-
-        y_multiband, nsf_source = self.decoder(torch.cat((z.detach(), emb.to(z)), dim=1), source_pitch.to(z))
-        y = self.pqmf.inverse(y_multiband)
-        
-        return y[..., :length]
