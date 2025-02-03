@@ -306,18 +306,17 @@ class ExcitationGenerator(torch.nn.Module):
         self.global_amp = global_amp
         self.block_size = block_size
         self.prev_phase = None
+        self.prev_pitch = None
         
     def forward(self,
                 f0: torch.Tensor,
                 periodicity: torch.Tensor,
-                loudness: torch.Tensor,
-                use_prev_phase: bool = False): #inputs = [B, 1, T]
+                loudness: torch.Tensor): #inputs = [B, 1, T]
         
         batch_size = f0.shape[0]
-
-        if use_prev_phase:
-            if self.prev_phase is None or self.prev_phase.size(0) != batch_size:
-                self.prev_phase = torch.zeros(batch_size, 1, device=f0.device)
+        
+        if self.prev_phase is None or self.prev_phase.size(0) != batch_size:
+            self.prev_phase = torch.zeros(batch_size, 1, device=f0.device)
             
         uv = threshold(periodicity)
         pitch = torch.clamp(f0, min=1e-3)
@@ -328,19 +327,12 @@ class ExcitationGenerator(torch.nn.Module):
         loudness = upsample(loudness, block_size=self.block_size)
         
         phase_inc = 2 * math.pi * pitch / self.sampling_rate
-
-        if use_prev_phase:
-            prev_phase = self.prev_phase.unsqueeze(-1)
-
-        if use_prev_phase:
-            omega = torch.cumsum(phase_inc, dim=-1) + prev_phase
-        else:
-            omega = torch.cumsum(phase_inc, dim=-1)
+        prev_phase = self.prev_phase.unsqueeze(-1)  # [B, 1, 1]
+        omega = torch.cumsum(phase_inc, dim=-1) + prev_phase
         
         signal = torch.sin(omega)
-
-        if use_prev_phase:
-            self.prev_phase = omega[:, :, -1] % (2 * math.pi)
+        
+        self.prev_phase = omega[:, :, -1] % (2 * math.pi)
         
         noise = torch.rand_like(signal) * 2. - 1.
         noise = noise * ap * loudness

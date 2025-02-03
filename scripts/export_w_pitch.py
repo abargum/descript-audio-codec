@@ -179,16 +179,19 @@ class ScriptedRAVE(nn_tilde.Module):
         
         in_length = x.shape[-1]
         #f0 = get_pitch(x, block_size=1024) #self.yin(x)
+
+        loudness = extract_loudness(x, sr=self.sr)
+        loudness = (10 ** (loudness / 20))
         
         x = self.pqmf(x)
 
         logits = self.pitch_encoder(x[:, :6, :])
         periodicity = entropy(logits)
-        uv = threshold(periodicity, 0.065)
         
         f0_pred = torch.argmax(logits, dim=1)
         f0_pred = bins_to_frequency(f0_pred)
-        f0_pred = (f0_pred * uv).unsqueeze(1)
+        f0_pred = f0_pred.unsqueeze(1)
+        #f0_pred = torch.ones(f0_pred.shape) * 200
 
         shifted_pitch = self.p_tracker(f0_pred)
         shifted_pitch *= p
@@ -199,8 +202,12 @@ class ScriptedRAVE(nn_tilde.Module):
         
         z = torch.cat((z, emb), dim=1)
         upp_factor = in_length // f0_pred.shape[-1]
+
+        y, harm = self.decoder(z,
+                               shifted_pitch,
+                               periodicity.unsqueeze(1),
+                               loudness.unsqueeze(1))
         
-        y, harm = self.decoder(z, shifted_pitch.squeeze(1), upp_factor=upp_factor)
         y = self.pqmf.inverse(y)
         
         return y
@@ -277,10 +284,10 @@ def main():
     stereo = False
     sample_rate = generator.sample_rate
 
-    x = torch.zeros(1, 1, 2**17).to(torch.device('cpu'))
+    x = torch.zeros(1, 1, 2**16).to(torch.device('cpu'))
     p = torch.zeros(1, 128).to(torch.device('cpu'))
-    y = generator.predict(x, x)
-    print("Shape of test output:", y.shape)
+    y = generator(x)
+    print("Shape of test output:", y['audio'].shape)
 
     for m in generator.modules():
         if hasattr(m, "weight_g"):
@@ -299,8 +306,8 @@ def main():
     )
 
     # ------ FOR TEST ------
-    #x, sr = librosa.load("audio/male.wav", sr=44100, mono=True)
-    x, sr = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
+    x, sr = librosa.load("audio/male.wav", sr=44100, mono=True)
+    #x, sr = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
     x = torch.tensor(x[:1*131072]).unsqueeze(0).unsqueeze(0)
     chunk_size = 2048
     num_chunks = (x.shape[-1] + chunk_size - 1) // chunk_size

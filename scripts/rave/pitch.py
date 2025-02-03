@@ -61,7 +61,7 @@ def cents(a: torch.Tensor, b: torch.Tensor):
     """Compute pitch difference in cents"""
     return 1200 * torch.log2(a / b)
 
-def a_weighting(frequencies, min_db: torch.tensor = torch.tensor(-80)):
+def a_weighting(frequencies, min_db: torch.Tensor = torch.tensor([-80])):
     f_sq = frequencies ** 2.0
 
     const = torch.tensor([12194.217, 20.598997, 107.65265, 737.86223]) ** 2.0
