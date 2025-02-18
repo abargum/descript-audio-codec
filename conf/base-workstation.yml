@@ -16,7 +16,7 @@ Discriminator.bands:
 # Optimization
 AdamW_G.betas: [0.8, 0.99]
 
-generator/AdamW.lr:     0.00012
+generator/AdamW.lr:     0.0001
 discriminator/AdamW.lr: 0.0001
 
 ExponentialLR.gamma: 0.999998

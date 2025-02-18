@@ -24,10 +24,8 @@ from rave.pitch import *
 import rave.blocks
 import rave.resampler
 
-from rave.yin import YIN
-from rave.torchyin import get_pitch
-from rave.torchpyin import get_pitch_viterbi
-from rave.pitchTracker import PitchRegisterTracker, PitchRegisterTracker2
+from rave.pitchTracker import SimplePitchTracker
+from utils.adapt_speaker import adapt_speaker
 
 emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
 emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
@@ -61,6 +59,7 @@ class ScriptedRAVE(nn_tilde.Module):
 
     def __init__(self,
                  pretrained,
+                 speaker_encoder,
                  pitch_enc,
                  stereo: bool,
                  target_sr: bool = None) -> None:
@@ -75,16 +74,20 @@ class ScriptedRAVE(nn_tilde.Module):
 
         self.pitch_encoder = pitch_enc
         
-        self.speaker_encoder = pretrained.speaker_encoder
+        self.speaker_encoder = speaker_encoder #pretrained.speaker_encoder
         emb_audio_pqmf = self.pqmf(emb_audio)
+
+        f0_val, emb_val = adapt_speaker("speaker-folders/Simon", self.speaker_encoder, self.pqmf)
+
+        emb_list[0] = emb_val.unsqueeze(-1)
+        f0_mean_list[0] = f0_val
+
         self.speakers = emb_list #self.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
         self.f0_means = f0_mean_list
         self.f0_stds = f0_std_list
 
-        self.yin = YIN(sr = self.sr, frame_time = 0.012)
-
         self.prev_speaker = 0
-        self.p_tracker = PitchRegisterTracker2(target_mean=self.f0_means[2], target_std=self.f0_stds[2])
+        self.p_tracker = SimplePitchTracker(target_mean=self.f0_means[0])
 
         self.resampler = None
 
@@ -99,11 +102,10 @@ class ScriptedRAVE(nn_tilde.Module):
         self.register_attribute("learn_source", False)
         self.register_attribute("reset_source", False)
         
-
-        self.latent_size = 320
-
         x_len = 2**14
         x = torch.zeros(1, 1, x_len)
+
+        self.latent_size = 320
 
         if self.resampler is not None:
             x = self.resampler.to_model_sampling_rate(x)
@@ -157,28 +159,23 @@ class ScriptedRAVE(nn_tilde.Module):
 
         x, p, s, i = inputs
 
-        """
         if i == 0:
             emb = self.speakers[0]
             if i != self.prev_speaker:
                 self.prev_speaker = i
-                self.p_tracker.reset_buffer(self.f0_means[0], self.f0_means[0])
+                self.p_tracker.reset_buffer(self.f0_means[0])
         elif i == 1:
             emb = self.speakers[1]
             if i != self.prev_speaker:
                 self.prev_speaker = i
-                self.p_tracker.reset_buffer(self.f0_means[1], self.f0_means[1])
+                self.p_tracker.reset_buffer(self.f0_means[1])
         else:
             emb = self.speakers[2]
             if i != self.prev_speaker:
                 self.prev_speaker = i
-                self.p_tracker.reset_buffer(self.f0_means[2], self.f0_means[2])
-
-        """
-        emb = self.speakers[2]
+                self.p_tracker.reset_buffer(self.f0_means[2])
         
         in_length = x.shape[-1]
-        #f0 = get_pitch(x, block_size=1024) #self.yin(x)
 
         loudness = extract_loudness(x, sr=self.sr)
         loudness = (10 ** (loudness / 20))
@@ -187,14 +184,14 @@ class ScriptedRAVE(nn_tilde.Module):
 
         logits = self.pitch_encoder(x[:, :6, :])
         periodicity = entropy(logits)
+        uv = threshold(periodicity)
         
         f0_pred = torch.argmax(logits, dim=1)
-        f0_pred = bins_to_frequency(f0_pred)
+        f0_pred = bins_to_frequency(f0_pred) * uv
         f0_pred = f0_pred.unsqueeze(1)
-        #f0_pred = torch.ones(f0_pred.shape) * 200
 
         shifted_pitch = self.p_tracker(f0_pred)
-        shifted_pitch *= p
+        shifted_pitch = shifted_pitch * p
         
         z = self.encoder(x[:, :6, :])
 
@@ -260,6 +257,8 @@ def main():
 
     generator = RAVE()
 
+    speaker_encoder = generator.speaker_encoder
+
     kwargs = {
             "folder": f"{args.run}",
             "map_location": "cpu",
@@ -271,14 +270,14 @@ def main():
     generator.eval()
 
     pitch_encoder = PitchEncoderV2(data_size = 6,
-                                   capacity = 32,
+                                   capacity = 16,
                                    ratios = [4, 4, 2, 2],
                                    latent_size = 1440,
                                    n_out = 1,
                                    kernel_size = 3,
                                    dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]])
 
-    pitch_encoder.load_state_dict(torch.load(f"{args.run}non-caus.pth", weights_only=True))
+    pitch_encoder.load_state_dict(torch.load(f"{args.run}caus_pitch_enc.pth", weights_only=True))
     pitch_encoder.eval()
 
     stereo = False
@@ -300,6 +299,7 @@ def main():
     script_class = ScriptedRAVE
     scripted_rave = script_class(
         pretrained=generator,
+        speaker_encoder=speaker_encoder,
         pitch_enc=pitch_encoder,
         stereo=stereo,
         target_sr=sample_rate,
@@ -307,8 +307,7 @@ def main():
 
     # ------ FOR TEST ------
     x, sr = librosa.load("audio/male.wav", sr=44100, mono=True)
-    #x, sr = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
-    x = torch.tensor(x[:1*131072]).unsqueeze(0).unsqueeze(0)
+    x = torch.tensor(x[:2*131072]).unsqueeze(0).unsqueeze(0)
     chunk_size = 2048
     num_chunks = (x.shape[-1] + chunk_size - 1) // chunk_size
 
@@ -326,7 +325,7 @@ def main():
         
         # Process the chunk
         chunk = chunk.float()
-        y = scripted_rave((chunk, torch.ones(1), torch.ones(1), 1))
+        y = scripted_rave((chunk, torch.ones(1), torch.ones(1), 0))
         processed_chunks.append(y)
     
     out = torch.cat(processed_chunks, dim=-1)

@@ -11,7 +11,7 @@ from torch.nn import functional as F
 
 import torch.nn.utils.weight_norm as wn
 
-conv_mode = 'centered'
+conv_mode = 'causal'
 norm_mode = 'weight_norm'
 add_dropout = False
 

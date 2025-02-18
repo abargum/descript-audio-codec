@@ -53,7 +53,7 @@ class RAVE(BaseModel):
         )
 
         self.decoder = GeneratorV2Sine(data_size = 16,
-                                       capacity = capacity,
+                                       capacity = 96,
                                        ratios = [4, 4, 2, 2],
                                        latent_size = latent_size + 256,
                                        kernel_size = 3,
@@ -69,7 +69,7 @@ class RAVE(BaseModel):
                                             kernel_size = 3,
                                             dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]])
 
-        self.pitch_encoder.load_state_dict(torch.load(f"scripts/utils/non-caus_pitch_enc.pth",
+        self.pitch_encoder.load_state_dict(torch.load(f"scripts/utils/caus_pitch_enc.pth",
                                                       weights_only=True))
         self.pitch_encoder.eval()
 
