@@ -7,7 +7,6 @@ from audiotools import STFTParams
 from einops import rearrange
 from torch.nn.utils import weight_norm
 
-
 def WNConv1d(*args, **kwargs):
     act = kwargs.pop("act", True)
     conv = weight_norm(nn.Conv1d(*args, **kwargs))

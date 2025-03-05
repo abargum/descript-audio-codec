@@ -21,13 +21,17 @@ from audiotools.ml.decorators import Tracker
 from audiotools.ml.decorators import when
 from torch.utils.tensorboard import SummaryWriter
 
-import dac
-from rave.rave_model import RAVE
+from modules import losses
+from modules.discriminator import Discriminator
+from modules.model import VoiceModel
 import wandb
 from einops import rearrange
 from torchaudio.functional import resample
 import pickle
 from utils.custom_dataset import CustomAudioDataset
+
+ml.BaseModel.INTERN += ["modules.discriminator"]
+ml.BaseModel.EXTERN += ["einops"]
 
 file_path = 'metadata.pkl'
 with open(file_path, 'rb') as file:
@@ -49,12 +53,9 @@ def ExponentialLR(optimizer, gamma: float = 1.0):
     return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma)
 
 
-# Models
-RAVE = argbind.bind(RAVE)
-
-Discriminator = argbind.bind(dac.model.Discriminator)
-
-# Data
+# Initialise Model and Dataset
+MODEL = argbind.bind(VoiceModel)
+Discriminator = argbind.bind(Discriminator)
 AudioDataset = argbind.bind(AudioDataset, "train", "val")
 AudioLoader = argbind.bind(AudioLoader, "train", "val")
 
@@ -68,8 +69,7 @@ tfm = argbind.bind_module(transforms, "train", "val", filter_fn=filter_fn)
 
 # Loss
 filter_fn = lambda fn: hasattr(fn, "forward") and "Loss" in fn.__name__
-losses = argbind.bind_module(dac.nn.loss, filter_fn=filter_fn)
-
+losses = argbind.bind_module(losses, filter_fn=filter_fn)
 
 def get_infinite_loader(dataloader):
     while True:
@@ -116,7 +116,7 @@ def build_dataset(
 
 @dataclass
 class State:
-    generator: RAVE
+    generator: MODEL
     
     optimizer_g: AdamW
     scheduler_g: ExponentialLR
@@ -157,12 +157,12 @@ def load(
             "package": not load_weights,
         }
         tracker.print(f"Resuming from {str(Path('.').absolute())}/{kwargs['folder']}")
-        if (Path(kwargs["folder"]) / "rave").exists():
-            generator, g_extra = RAVE.load_from_folder(**kwargs)
+        if (Path(kwargs["folder"]) / "model").exists():
+            generator, g_extra = MODEL.load_from_folder(**kwargs)
         if (Path(kwargs["folder"]) / "discriminator").exists():
             discriminator, d_extra = Discriminator.load_from_folder(**kwargs)
 
-    generator = RAVE() if generator is None else generator
+    generator = MODEL() if generator is None else generator
     discriminator = Discriminator() if discriminator is None else discriminator
 
     tracker.print(generator)
@@ -257,8 +257,7 @@ def get_audio(batch, state, accel):
 def get_units(batch):
     b, n, t = batch["signal"].shape
     
-    #unit_length = (t / sr * 16000) // 320
-    unit_length = 74
+    unit_length = 74 #(t / sr * 16000) // 320
     target_units = torch.zeros(b, unit_length)
 
     for i, p in enumerate(batch["path"]):
@@ -365,10 +364,12 @@ def checkpoint(state, save_iters, save_path):
         accel.unwrap(state.generator).save_to_folder(
             f"{save_path}/{tag}", generator_extra, package=False
         )
+        
         discriminator_extra = {
             "optimizer.pth": state.optimizer_d.state_dict(),
             "scheduler.pth": state.scheduler_d.state_dict(),
         }
+        
         accel.unwrap(state.discriminator).save_to_folder(
             f"{save_path}/{tag}", discriminator_extra
         )
@@ -464,7 +465,7 @@ def train(
         start_idx=state.tracker.step * batch_size,
         num_workers=num_workers,
         batch_size=batch_size,
-        collate_fn= CustomAudioDataset.collate #state.train_data.collate,
+        collate_fn= CustomAudioDataset.collate 
     )
     train_dataloader = get_infinite_loader(train_dataloader)
     val_dataloader = accel.prepare_dataloader(
@@ -472,7 +473,7 @@ def train(
         start_idx=0,
         num_workers=num_workers,
         batch_size=val_batch_size,
-        collate_fn=CustomAudioDataset.collate, #state.val_data.collate,
+        collate_fn=CustomAudioDataset.collate,
         persistent_workers=True if num_workers > 0 else False,
     )
 

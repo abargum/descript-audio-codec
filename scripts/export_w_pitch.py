@@ -16,16 +16,16 @@ import torch.nn.functional as F
 from absl import flags
 import librosa
 import pickle
-from rave.rave_model import RAVE
-from rave.pitch_enc import PitchEncoderV2
+
+from modules.model import VoiceModel
+from modules.encoder import Encoder
+from modules.utils import *
+
+import export.resampler
+from export.pitchTracker import SimplePitchTracker
+from export.adapt_speaker import adapt_speaker
+
 from utils.utils import load_dict_from_txt
-from rave.pitch import *
-
-import rave.blocks
-import rave.resampler
-
-from rave.pitchTracker import SimplePitchTracker
-from utils.adapt_speaker import adapt_speaker
 
 emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
 emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
@@ -255,8 +255,7 @@ def main():
     
     cc.use_cached_conv(True)
 
-    generator = RAVE()
-
+    generator = VoiceModel()
     speaker_encoder = generator.speaker_encoder
 
     kwargs = {
@@ -269,13 +268,13 @@ def main():
     generator.to(torch.device('cpu'))
     generator.eval()
 
-    pitch_encoder = PitchEncoderV2(data_size = 6,
-                                   capacity = 16,
-                                   ratios = [4, 4, 2, 2],
-                                   latent_size = 1440,
-                                   n_out = 1,
-                                   kernel_size = 3,
-                                   dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]])
+    pitch_encoder = Encoder(data_size = 6,
+                            capacity = 16,
+                            ratios = [4, 4, 2, 2],
+                            latent_size = 1440,
+                            n_out = 1,
+                            kernel_size = 3,
+                            dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]])
 
     pitch_encoder.load_state_dict(torch.load(f"{args.run}caus_pitch_enc.pth", weights_only=True))
     pitch_encoder.eval()
