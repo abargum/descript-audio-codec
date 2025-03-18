@@ -21,13 +21,13 @@ from modules.model import VoiceModel
 from modules.encoder import Encoder
 from modules.utils import *
 
-import export.resampler
-from export.pitchTracker import SimplePitchTracker
-from export.adapt_speaker import adapt_speaker
+import modules.resampler
+from export_utils.pitchTracker import SimplePitchTracker
+from export_utils.adapt_speaker import adapt_speaker
 
 from utils.utils import load_dict_from_txt
 
-emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=True)
+emb_audio, _ = librosa.load("scripts/audio/p228_test.wav", sr=44100, mono=True)
 emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
 
 # Load speaker data
