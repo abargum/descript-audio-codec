@@ -130,7 +130,10 @@ class VoiceModel(BaseModel):
         f0 = torch.argmax(pitch_logits, dim=1)
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)
-        loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
+        
+        #loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
+        loudness = extract_loudness(audio_data, sr=self.sample_rate)
+        loudness = (10 ** (loudness / 20))
 
         audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
@@ -169,7 +172,9 @@ class VoiceModel(BaseModel):
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)   
 
-        loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
+        #loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
+        loudness = extract_loudness(audio_data, sr=self.sample_rate)
+        loudness = (10 ** (loudness / 20))
         
         z = self.encoder(audio_multiband[:, :6, :])
        
@@ -211,7 +216,9 @@ class VoiceModel(BaseModel):
             f0_target = bins_to_frequency(f0_target)
 
 
-        loudness = extract_rms(x, self.downsampling_rate, upsample=False)
+        #loudness = extract_rms(x, self.downsampling_rate, upsample=False)
+        loudness = extract_loudness(audio_data, sr=self.sample_rate)
+        loudness = (10 ** (loudness / 20))
         
         in_med, in_std = extract_f0_mean_std(f0_in)
         tar_med, tar_std = extract_f0_mean_std(f0_target)
