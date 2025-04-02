@@ -78,9 +78,12 @@ class ScriptedRAVE(nn_tilde.Module):
         emb_audio_pqmf = self.pqmf(emb_audio)
 
         f0_val, emb_val = adapt_speaker("speaker-folders/Simon", self.speaker_encoder, self.pqmf)
-
         emb_list[0] = emb_val.unsqueeze(-1)
         f0_mean_list[0] = f0_val
+
+        f0_val1, emb_val1 = adapt_speaker("speaker-folders/Spongebob", self.speaker_encoder, self.pqmf)
+        emb_list[1] = emb_val1.unsqueeze(-1)
+        f0_mean_list[1] = f0_val1 - 10
 
         self.speakers = emb_list #self.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
         self.f0_means = f0_mean_list
@@ -325,7 +328,7 @@ def main():
         
         # Process the chunk
         chunk = chunk.float()
-        y = scripted_rave((chunk, torch.ones(1), torch.ones(1), 0))
+        y = scripted_rave((chunk, torch.ones(1), torch.ones(1), 1))
         processed_chunks.append(y)
     
     out = torch.cat(processed_chunks, dim=-1)

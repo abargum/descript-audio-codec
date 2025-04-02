@@ -90,7 +90,7 @@ class RAVE(BaseModel):
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
 
     def load_speaker_statedict(self, path):
-        loaded_state = torch.load(path, map_location="cuda:%d" % 0)
+        loaded_state = torch.load(path, map_location="cuda")
         
         newdict = {}
         pqmfdict = {}
