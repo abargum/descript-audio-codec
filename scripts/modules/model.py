@@ -61,7 +61,7 @@ class VoiceModel(BaseModel):
         self.decoder = Generator(data_size = 16,
                                        capacity = capacity_decoder,
                                        ratios = ratios,
-                                       latent_size = latent_size_content_encoder + 256,
+                                       latent_size = latent_size_content_encoder,
                                        kernel_size = kernel_size,
                                        sampling_rate = sampling_rate,
                                        dilations = dilations
@@ -137,13 +137,13 @@ class VoiceModel(BaseModel):
         z = self.encoder(audio_multiband_aug[:, :6, :])
 
         projected_z = self.ce_projection(z)
+        
+        z = z.detach()
        
-        emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z.shape[-1])
+        speaker_emb = self.speaker_encoder(audio_multiband)
 
-        z_cat = torch.cat((z.detach(), emb), dim=1)
-
-        y_multiband, nsf_source = self.decoder(z_cat,
+        y_multiband, nsf_source = self.decoder(z,
+                                               speaker_emb,
                                                f0.unsqueeze(1),
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
@@ -171,21 +171,23 @@ class VoiceModel(BaseModel):
 
         loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
         
-        z = self.encoder(audio_multiband[:, :6, :])
+        z = self.encoder(audio_multiband[:, :6, :])        
+        z = z.detach()
        
-        emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z.shape[-1])
+        speaker_emb = self.speaker_encoder(audio_multiband)
 
-        z_cat = torch.cat((z.detach(), emb), dim=1)
-
-        y_multiband, nsf_source = self.decoder(z_cat,
+        y_multiband, nsf_source = self.decoder(z,
+                                               speaker_emb,
                                                f0.unsqueeze(1),
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
         
         y = self.pqmf.inverse(y_multiband)
         
-        return {"audio": y[..., :length]}
+        return {
+            "audio": y[..., :length],
+            "excitation": nsf_source
+        }
 
 
     def predict(self, audio_data: torch.Tensor, target: torch.Tensor, pitch_mode='mine'):
@@ -218,9 +220,10 @@ class VoiceModel(BaseModel):
         
         z = self.encoder(audio_multiband[:, :6, :])
 
-        with torch.no_grad():
-            emb = self.speaker_encoder(target_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z.shape[-1])
+        z = self.encoder(audio_multiband[:, :6, :])        
+        z = z.detach()
+       
+        speaker_emb = self.speaker_encoder(audio_multiband)
 
         f0_in[f0_in == 0] = float('nan')
         
@@ -229,8 +232,9 @@ class VoiceModel(BaseModel):
         source_pitch = source_pitch * 1.0
         source_pitch[torch.isnan(source_pitch)] = 0
 
-        y_multiband, nsf_source = self.decoder(torch.cat((z, emb.to(z)), dim=1),
-                                               source_pitch.to(z),
+        y_multiband, nsf_source = self.decoder(z,
+                                               speaker_emb,
+                                               f0.unsqueeze(1),
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
 

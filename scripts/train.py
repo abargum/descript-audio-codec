@@ -54,10 +54,12 @@ def ExponentialLR(optimizer, gamma: float = 1.0):
 
 def count_parameters(model):
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Total trainable parameters: {total_params:,}")
     for name, submodel in model.named_children():
         submodel_params = sum(p.numel() for p in submodel.parameters() if p.requires_grad)
         print(f"{name}: {submodel_params:,} parameters")
+    print("-----------------------------------------")
+    print(f"Total trainable parameters: {total_params:,}")
+    print("-----------------------------------------")
     return total_params
 
 # Initialise Model and Dataset
@@ -172,12 +174,11 @@ def load(
     generator = MODEL() if generator is None else generator
     discriminator = Discriminator() if discriminator is None else discriminator
 
-    print("---------------------------")
+    print("-----------------------------------------")
     param_model = count_parameters(generator)
     param_disc = count_parameters(discriminator)
-    print("---------------------------")
 
-    # tracker.print(generator)
+    tracker.print(generator)
     # tracker.print(discriminator)
 
     generator = accel.prepare_model(generator)
@@ -263,8 +264,9 @@ def get_audio(batch, state, accel):
     out = state.generator.get_val_audio(signal.audio_data)
     recons = AudioSignal(out["audio"], signal.sample_rate)
     inp = AudioSignal(signal.audio_data, signal.sample_rate)
+    harm = AudioSignal(out["excitation"], signal.sample_rate)
 
-    return inp, recons, signal.sample_rate
+    return inp, recons, harm, signal.sample_rate
 
 def get_units(batch):
     b, n, t = batch["signal"].shape
@@ -417,11 +419,12 @@ def validate(state, val_dataloader, accel):
         output = val_loop(batch, state, accel)
         last_batch = batch
 
-    inp, recon, sr = get_audio(last_batch, state, accel)
+    inp, recon, harm, sr = get_audio(last_batch, state, accel)
     inp = inp.audio_data.float()
     recon = recon.audio_data.float()
+    harm = harm.audio_data.float()
 
-    audio = torch.cat([inp, recon], -1)
+    audio = torch.cat([inp, recon, harm], -1)
     audio = list(map(lambda x: x.cpu(), audio))
     audio_to_export = torch.cat(audio, 0)[:8].reshape(-1).numpy()
 

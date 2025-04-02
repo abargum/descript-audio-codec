@@ -147,9 +147,9 @@ class ExcitationGenerator(torch.nn.Module):
         self.prev_phase = omega[:, :, -1] % (2 * math.pi)
         
         noise = torch.rand_like(signal) * 2. - 1.
-        noise = noise * ap * loudness
+        noise = (noise * 2) * ap
         
-        return (signal + noise) * self.global_amp
+        return (signal + noise) * loudness
 
 
 class AddUpDownSampling(nn.Module):
@@ -188,6 +188,34 @@ class AddUpDownSampling(nn.Module):
         return output
 
 
+class FiLM(torch.nn.Module):
+
+    def __init__(self, dim: int, conditioning_dim: int):
+        super().__init__()
+        self.relu = torch.nn.LeakyReLU(0.2)
+        self.to_gamma = torch.nn.Linear(conditioning_dim, dim)
+        self.to_beta = torch.nn.Linear(conditioning_dim, dim)
+
+    def forward(self, x: torch.Tensor, condition: torch.Tensor):
+        x = self.relu(x)
+        gamma = self.to_gamma(condition).unsqueeze(dim=-1)
+        beta = self.to_beta(condition).unsqueeze(dim=-1)
+        x = x * gamma + beta
+        return x
+
+
+class SequentialWithConditioning(cc.CachedSequential):
+    def forward(self, x, speaker, excitation):
+        for module in self:
+            if isinstance(module, FiLM):
+                x = module(x, speaker)
+            elif isinstance(module, AddUpDownSampling):
+                x = module(x, excitation)
+            else:
+                x = module(x)
+        return x
+
+
 class Generator(nn.Module):
 
     def __init__(
@@ -200,6 +228,7 @@ class Generator(nn.Module):
         sampling_rate: int,
         dilations: Sequence[int],
         keep_dim: bool = False,
+        speaker_size: int = 256,
         recurrent_layer: Optional[Callable[[], nn.Module]] = None,
         amplitude_modulation: bool = True,
         activation: Callable[[int], nn.Module] = lambda dim: nn.LeakyReLU(.2),
@@ -218,15 +247,15 @@ class Generator(nn.Module):
         self.ex_generator = ExcitationGenerator(sampling_rate=sampling_rate,
                                                 global_amp=0.25)
 
-        self.conditioning_stages = [2, 6, 11, 16]
-
+        self.conditioning_stages = [3, 9, 16]
         sine_conv_kernels = [512, 256, 64, 16]
-        downsampling_channels = []
-
+        
         net = []
 
         if recurrent_layer is not None:
             net.append(recurrent_layer(latent_size))
+
+        net.append(FiLM(latent_size, speaker_size))
 
         net.append(
             normalization(
@@ -237,7 +266,9 @@ class Generator(nn.Module):
                     padding=cc.get_padding(kernel_size, mode=conv_mode),
                 )), )
 
-        for r, dilations in zip(ratios, dilations_list):
+        add_delay = True
+
+        for i, (r, dilations) in enumerate(zip(ratios, dilations_list)):
             # ADD UPSAMPLING UNIT
             if keep_dim:
                 out_channels = num_channels // r
@@ -251,8 +282,18 @@ class Generator(nn.Module):
                                        2 * r,
                                        stride=r,
                                        padding=r // 2)))
-            
-            downsampling_channels.append(out_channels)
+
+            # ADD EXCITATION CONDITIONING, DO NOT CONDITION LAST LAYER
+            if i < len(self.conditioning_stages):
+                if i % 2 == 0:
+                    add_delay = True
+                else:
+                    add_delay = False
+                    
+                net.append(AddUpDownSampling(out_channels,
+                                             sine_conv_kernels[i],
+                                             net[self.conditioning_stages[i]].cumulative_delay,
+                                             add_delay=add_delay))
 
             num_channels = out_channels
 
@@ -268,6 +309,8 @@ class Generator(nn.Module):
                             dilation=d,
                         )))
 
+            net.append(FiLM(num_channels, speaker_size))
+
         net.append(Snake(num_channels))
 
         waveform_module = normalization(
@@ -280,48 +323,20 @@ class Generator(nn.Module):
 
         net.append(waveform_module)
 
-        self.net = cc.CachedSequential(*net)
-
-        self.conditioning_layers = nn.ModuleList()
-        
-        add_delay = True
-        for i, stage in enumerate(self.conditioning_stages):
-            if i % 2 == 0:
-                add_delay = True
-            else:
-                add_delay = False
-
-            self.conditioning_layers.append(AddUpDownSampling(downsampling_channels[i],
-                                                              sine_conv_kernels[i],
-                                                              self.net[stage].cumulative_delay,
-                                                              add_delay=add_delay))
+        self.net = SequentialWithConditioning(*net)
 
         self.amplitude_modulation = amplitude_modulation
 
     def forward(self,
                 x: torch.Tensor,
+                speaker: torch.Tensor,
                 f0: torch.Tensor,
                 periodicity: torch.Tensor,
                 loudness: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
 
         har_source = self.ex_generator(f0, periodicity, loudness)
-        
-        iterator = 0
 
-        for i, layer in enumerate(self.net):
-            x = layer(x)
-            if i in self.conditioning_stages:
-                if i == 2:
-                    ex_down = self.conditioning_layers[0](x, har_source)
-                elif i == 6:
-                    ex_down = self.conditioning_layers[1](x, har_source)
-                elif i == 11:
-                    ex_down = self.conditioning_layers[2](x, har_source)
-                else:
-                    ex_down = self.conditioning_layers[3](x, har_source)
-                    
-                x = x + ex_down
-                iterator += 1
+        x = self.net(x, speaker, har_source)
 
         if self.amplitude_modulation:
             x, amplitude = x.split(x.shape[1] // 2, 1)
