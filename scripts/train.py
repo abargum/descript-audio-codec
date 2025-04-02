@@ -52,6 +52,13 @@ Accelerator = argbind.bind(ml.Accelerator, without_prefix=True)
 def ExponentialLR(optimizer, gamma: float = 1.0):
     return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma)
 
+def count_parameters(model):
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total trainable parameters: {total_params:,}")
+    for name, submodel in model.named_children():
+        submodel_params = sum(p.numel() for p in submodel.parameters() if p.requires_grad)
+        print(f"{name}: {submodel_params:,} parameters")
+    return total_params
 
 # Initialise Model and Dataset
 MODEL = argbind.bind(VoiceModel)
@@ -165,8 +172,13 @@ def load(
     generator = MODEL() if generator is None else generator
     discriminator = Discriminator() if discriminator is None else discriminator
 
-    tracker.print(generator)
-    tracker.print(discriminator)
+    print("---------------------------")
+    param_model = count_parameters(generator)
+    param_disc = count_parameters(discriminator)
+    print("---------------------------")
+
+    # tracker.print(generator)
+    # tracker.print(discriminator)
 
     generator = accel.prepare_model(generator)
     discriminator = accel.prepare_model(discriminator)

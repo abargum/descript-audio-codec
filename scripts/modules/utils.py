@@ -9,7 +9,7 @@ import argparse
 import torch.nn.functional as F
 from torchfcpe import spawn_bundled_infer_model
 
-pitch_model = spawn_bundled_infer_model(device="cuda:0")
+pitch_model = spawn_bundled_infer_model(device="cuda")
 
 def extract_utterance_fcpe(y, sr: int, frame_len_samples: int):
     f0_target_length=(y.shape[-1] // frame_len_samples)
