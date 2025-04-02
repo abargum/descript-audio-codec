@@ -112,11 +112,14 @@ def threshold(periodicity: torch.Tensor, value: float=0.065):
 
 
 class ExcitationGenerator(torch.nn.Module):
-    def __init__(self, sampling_rate, global_amp=0.25, block_size=1024):
+    def __init__(self, sampling_rate, global_amp=0.25, block_size=1024, is_pulse=False, duty_cycle=0.5):
         super().__init__()
         self.sampling_rate = sampling_rate
         self.global_amp = global_amp
         self.block_size = block_size
+        self.block_size = block_size
+        self.duty_cycle = duty_cycle  # Controls pulse width (0 to 1)
+        self.is_pulse = is_pulse
         self.prev_phase = None
         self.prev_pitch = None
         
@@ -141,8 +144,12 @@ class ExcitationGenerator(torch.nn.Module):
         phase_inc = 2 * math.pi * pitch / self.sampling_rate
         prev_phase = self.prev_phase.unsqueeze(-1)  # [B, 1, 1]
         omega = torch.cumsum(phase_inc, dim=-1) + prev_phase
-        
-        signal = torch.sin(omega)
+
+        if self.is_pulse:
+            norm_phase = (omega / (2 * math.pi)) % 1.0
+            signal = torch.where(norm_phase < self.duty_cycle, torch.ones_like(norm_phase), -torch.ones_like(norm_phase))
+        else:
+            signal = torch.sin(omega)
         
         self.prev_phase = omega[:, :, -1] % (2 * math.pi)
         
@@ -245,7 +252,8 @@ class Generator(nn.Module):
 
         self.sampling_rate = sampling_rate
         self.ex_generator = ExcitationGenerator(sampling_rate=sampling_rate,
-                                                global_amp=0.25)
+                                                global_amp=0.25,
+                                                is_pulse=True)
 
         self.conditioning_stages = [3, 9, 16]
         sine_conv_kernels = [512, 256, 64, 16]
