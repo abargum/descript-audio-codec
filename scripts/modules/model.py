@@ -11,7 +11,7 @@ from .encoder import SpeakerEncoder, Encoder
 from .pqmf import CachedPQMF as PQMF
 
 from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
-from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_loudness
+from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_rms
 
 class CrossEntropyProjection(nn.Module):
     def __init__(self, channels):
@@ -39,11 +39,13 @@ class VoiceModel(BaseModel):
         ratios = [4, 4, 2, 2],
         dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]],
         sampling_rate = 44100,
+        downsampling_rate = 1024,
         valid_signal_crop = True):
         
         super().__init__()
 
         self.sample_rate = sampling_rate
+        self.downsampling_rate = downsampling_rate
 
         self.pqmf = PQMF(attenuation = 100, n_band = 16)
 
@@ -119,8 +121,6 @@ class VoiceModel(BaseModel):
     def forward(self,
                 audio_data: torch.Tensor,
                 sample_rate: int = None):
-
-        audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
         
         length = audio_data.shape[-1]
 
@@ -130,10 +130,9 @@ class VoiceModel(BaseModel):
         f0 = torch.argmax(pitch_logits, dim=1)
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)
+        loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
 
-        loudness = extract_loudness(audio_data, sr=self.sample_rate)
-        loudness = (10 ** (loudness / 20))
-        
+        audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
         z = self.encoder(audio_multiband_aug[:, :6, :])
 
@@ -170,8 +169,7 @@ class VoiceModel(BaseModel):
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)   
 
-        loudness = extract_loudness(audio_data, sr=self.sample_rate)
-        loudness = (10 ** (loudness / 20))
+        loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
         
         z = self.encoder(audio_multiband[:, :6, :])
        
@@ -213,8 +211,7 @@ class VoiceModel(BaseModel):
             f0_target = bins_to_frequency(f0_target)
 
 
-        loudness = extract_loudness(audio_data, sr=self.sample_rate)
-        loudness = (10 ** (loudness / 20))
+        loudness = extract_rms(x, self.downsampling_rate, upsample=False)
         
         in_med, in_std = extract_f0_mean_std(f0_in)
         tar_med, tar_std = extract_f0_mean_std(f0_target)
