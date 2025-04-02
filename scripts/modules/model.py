@@ -11,7 +11,7 @@ from .encoder import SpeakerEncoder, Encoder
 from .pqmf import CachedPQMF as PQMF
 
 from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
-from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_rms
+from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_loudness, extract_rms
 
 class CrossEntropyProjection(nn.Module):
     def __init__(self, channels):
