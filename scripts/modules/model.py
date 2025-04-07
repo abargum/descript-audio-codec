@@ -190,12 +190,11 @@ class VoiceModel(BaseModel):
         }
 
 
-    def predict(self, audio_data: torch.Tensor, target: torch.Tensor, pitch_mode='mine'):
+    def predict(self, audio_data: torch.Tensor, target_emb: torch.Tensor, tar_mean: float, tar_std: float, pitch_mode='mine'):
 
         length = audio_data.shape[-1]
 
         audio_multiband = self.pqmf(audio_data)
-        target_multiband = self.pqmf(target)
 
         pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])
         periodicity = entropy(pitch_logits)
@@ -203,41 +202,29 @@ class VoiceModel(BaseModel):
         if pitch_mode == 'fcpe':
             f0_in = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
             f0_in = f0_in[:, :, 0]
-            f0_target = get_f0_fcpe(target.squeeze(1), self.sample_rate, 1024)
-            f0_target = f0_target[:, :, 0]
         else:
             f0_in = torch.argmax(pitch_logits, dim=1)
             f0_in = bins_to_frequency(f0_in)
-            pitch_logits = self.pitch_encoder(target_multiband[:, :6, :])
-            f0_target = torch.argmax(pitch_logits, dim=1)
-            f0_target = bins_to_frequency(f0_target)
 
-
-        loudness = extract_rms(x, self.downsampling_rate, upsample=False)
+        loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
         
-        in_med, in_std = extract_f0_mean_std(f0_in)
-        tar_med, tar_std = extract_f0_mean_std(f0_target)
+        in_mean, in_std = extract_f0_mean_std(f0_in)
         
         z = self.encoder(audio_multiband[:, :6, :])
 
-        z = self.encoder(audio_multiband[:, :6, :])        
-        z = z.detach()
-       
-        speaker_emb = self.speaker_encoder(audio_multiband)
-
         f0_in[f0_in == 0] = float('nan')
         
-        standardized_source_pitch = (f0_in - in_med.to(f0_in)) / in_std.to(f0_in)
-        source_pitch = (standardized_source_pitch * tar_std) + tar_med
+        standardized_source_pitch = (f0_in - in_mean.to(f0_in)) / in_std.to(f0_in)
+        source_pitch = (standardized_source_pitch * tar_std) + tar_mean
         source_pitch = source_pitch * 1.0
         source_pitch[torch.isnan(source_pitch)] = 0
 
         y_multiband, nsf_source = self.decoder(z,
-                                               speaker_emb,
-                                               f0.unsqueeze(1),
+                                               target_emb.to(z),
+                                               source_pitch.to(z),
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
 
         y = self.pqmf.inverse(y_multiband)
         
-        return y[..., :length]
+        return y
