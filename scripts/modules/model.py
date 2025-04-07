@@ -11,7 +11,7 @@ from .encoder import SpeakerEncoder, Encoder
 from .pqmf import CachedPQMF as PQMF
 
 from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
-from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_rms
+from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_rms, extract_loudness
 
 class CrossEntropyProjection(nn.Module):
     def __init__(self, channels):
@@ -130,7 +130,9 @@ class VoiceModel(BaseModel):
         f0 = torch.argmax(pitch_logits, dim=1)
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)
-        loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
+        
+        loudness = extract_loudness(audio_data, sr=self.sample_rate)
+        loudness = (10 ** (loudness / 20))
 
         audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
@@ -169,7 +171,8 @@ class VoiceModel(BaseModel):
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)   
 
-        loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
+        loudness = extract_loudness(audio_data, sr=self.sample_rate)
+        loudness = (10 ** (loudness / 20))
         
         z = self.encoder(audio_multiband[:, :6, :])        
         z = z.detach()
@@ -206,7 +209,8 @@ class VoiceModel(BaseModel):
             f0_in = torch.argmax(pitch_logits, dim=1)
             f0_in = bins_to_frequency(f0_in)
 
-        loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
+        loudness = extract_loudness(audio_data, sr=self.sample_rate)
+        loudness = (10 ** (loudness / 20))
         
         in_mean, in_std = extract_f0_mean_std(f0_in)
         
