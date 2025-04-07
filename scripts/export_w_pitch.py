@@ -85,7 +85,7 @@ class ScriptedRAVE(nn_tilde.Module):
         emb_list[1] = emb_val1.unsqueeze(-1)
         f0_mean_list[1] = f0_val1 - 10
 
-        self.speakers = emb_list #self.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
+        self.speakers = emb_list 
         self.f0_means = f0_mean_list
         self.f0_stds = f0_std_list
 
