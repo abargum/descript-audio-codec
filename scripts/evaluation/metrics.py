@@ -73,7 +73,7 @@ def adjust_audio_length(y, sr, min_power=14, mode="truncate"):
     return y_adj
 
 def get_speaker_embeddings(targets):
-    file_path = 'scripts/utils/speaker_emb_dict_libri.pkl'
+    file_path = 'scripts/utils/speaker_emb_dict.pkl'
     with open(file_path, 'rb') as file:
         speaker_dict = pickle.load(file)
     
@@ -407,7 +407,7 @@ if __name__ == "__main__":
     
     print(f"Model loaded from: {args.folder}")
 
-    targets = ['2412', '2803']
+    targets = ['p226', 'p228']
     speaker_embeddings, speaker_means, speaker_stds = get_speaker_embeddings(targets)
     
     shutil.rmtree(args.resampled_audio_folder)
