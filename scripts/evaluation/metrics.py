@@ -407,7 +407,7 @@ if __name__ == "__main__":
     
     print(f"Model loaded from: {args.folder}")
 
-    targets = ['p226', 'p228']
+    targets = ['p227', 'p228']
     speaker_embeddings, speaker_means, speaker_stds = get_speaker_embeddings(targets)
     
     shutil.rmtree(args.resampled_audio_folder)
