@@ -31,9 +31,6 @@ emb_audio, _ = librosa.load("scripts/rave/audio/p228_test.flac", sr=44100, mono=
 emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
 
 # Load speaker data
-file = 'scripts/utils/speaker-info.txt'
-info_dict = load_dict_from_txt(file)
-
 file_path = 'scripts/utils/speaker_emb_dict.pkl'
 with open(file_path, 'rb') as file:
     speaker_dict = pickle.load(file)
