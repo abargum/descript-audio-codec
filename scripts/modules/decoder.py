@@ -253,9 +253,9 @@ class Generator(nn.Module):
         self.sampling_rate = sampling_rate
         self.ex_generator = ExcitationGenerator(sampling_rate=sampling_rate,
                                                 global_amp=0.25,
-                                                is_pulse=False)
+                                                is_pulse=True)
 
-        self.conditioning_stages = [3, 9, 16, 23]
+        self.conditioning_stages = [3, 9, 16]
         sine_conv_kernels = [512, 256, 64, 16]
         
         net = []

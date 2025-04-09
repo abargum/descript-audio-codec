@@ -32,7 +32,7 @@ from export_utils.pitchTracker import PitchRegisterTracker
 from utils.utils import load_dict_from_txt
 
 parser = argparse.ArgumentParser(description='Voice model processing script')
-parser.add_argument('--folder', type=str, default="pretrained/ablation/sine", help='Path to the model folder')
+parser.add_argument('--folder', type=str, default="pretrained/ablation/default", help='Path to the model folder')
 parser.add_argument('--input_audio_folder', type=str, default="audio", help='Path to the input audio folder')
 parser.add_argument('--resampled_audio_folder', type=str, default="scripts/evaluation/resampled", help='Path to the resampled input audio folder')
 parser.add_argument('--processed_audio_folder', type=str, default="scripts/evaluation/processed",  help='Path to the processed audio folder')
@@ -407,7 +407,7 @@ if __name__ == "__main__":
     
     print(f"Model loaded from: {args.folder}")
 
-    targets = ['p226', 'p228']
+    targets = ['p227', 'p228']
     speaker_embeddings, speaker_means, speaker_stds = get_speaker_embeddings(targets)
     
     shutil.rmtree(args.resampled_audio_folder)
@@ -435,5 +435,4 @@ if __name__ == "__main__":
 
     # Calculate WER
     #calculate_wer(targets, args.resampled_audio_folder, args.processed_audio_folder)
-    
     
