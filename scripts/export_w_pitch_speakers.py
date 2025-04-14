@@ -183,7 +183,7 @@ def main():
                                    kernel_size = 3,
                                    dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]])
 
-    pitch_encoder.load_state_dict(torch.load(f"{args.run}caus_pitch_enc.pth", weights_only=True))
+    pitch_encoder.load_state_dict(torch.load(f"{args.run}caus_pitch_enc_16.pth", weights_only=True))
     pitch_encoder.eval()
 
     stereo = False
