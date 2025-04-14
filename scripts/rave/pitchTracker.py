@@ -132,11 +132,11 @@ class PitchRegisterTracker2(torch.nn.Module):
 
 
 class SimplePitchTracker(torch.nn.Module):
-    def __init__(self, target_mean: float):
+    def __init__(self, target_mean: torch.Tensor):
         super().__init__()
         
         # Register buffers for stateful values
-        self.register_buffer("target_mean", torch.tensor(target_mean, dtype=torch.float32))
+        self.register_buffer("target_mean", target_mean)
         self.register_buffer("in_mean", torch.tensor(0.0, dtype=torch.float32))
         self.register_buffer("n_samples", torch.tensor(0, dtype=torch.float32))
         
@@ -167,10 +167,9 @@ class SimplePitchTracker(torch.nn.Module):
         
         return shifted_pitch
 
-    def reset_speaker(self, new_target_mean: float) -> None:
-        self.target_mean = torch.tensor(new_target_mean, dtype=torch.float32)
+    def reset_speaker(self, new_target_mean: torch.Tensor) -> None:
+        self.target_mean = new_target_mean
         
-    def reset_buffer(self, new_target_mean: float) -> None:
-        self.target_mean = torch.tensor(new_target_mean, dtype=torch.float32)
+    def reset_buffer(self) -> None:
         self.in_mean = torch.tensor(0.0, dtype=torch.float32)
         self.n_samples = torch.tensor(0, dtype=torch.float32)
