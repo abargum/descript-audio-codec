@@ -164,10 +164,11 @@ class AddUpDownSampling(nn.Module):
                                  padding=cc.get_padding(kernel_size * 2, mode=conv_mode))
 
         sine_delay = self.ex_conv.cumulative_delay
-        if add_delay:
-            delays = [net_delay, sine_delay] 
-        else:
-            delays = [0, 0]
+        #if add_delay:
+        #    delays = [net_delay, sine_delay] 
+        #else:
+        
+        delays = [0, 0]
 
         max_delay = max(delays)
 
