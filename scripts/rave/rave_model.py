@@ -3,7 +3,7 @@ from .blocks2 import SpeakerRAVE, EncoderV2
 from .pqmf import CachedPQMF as PQMF
 from .pitch_enc import PitchEncoderV2
 from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
-from .pitch import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_loudness
+from .pitch import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_loudness, extract_rms
 
 import gin
 import numpy as np
@@ -55,7 +55,7 @@ class RAVE(BaseModel):
         self.decoder = GeneratorV2Sine(data_size = 16,
                                        capacity = 96,
                                        ratios = [4, 4, 2, 2],
-                                       latent_size = latent_size + 256,
+                                       latent_size = latent_size,
                                        kernel_size = 3,
                                        sampling_rate = sampling_rate,
                                        dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]]
@@ -127,20 +127,17 @@ class RAVE(BaseModel):
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)
 
-        loudness = extract_loudness(audio_data, sr=self.sample_rate)
-        loudness = (10 ** (loudness / 20))
+        loudness = extract_rms(audio_data, 1024, upsample=False)
         
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
         z = self.encoder(audio_multiband_aug[:, :6, :])
 
         projected_z = self.ce_projection(z)
        
-        emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z.shape[-1])
+        emb = self.speaker_encoder(audio_multiband)
 
-        z_cat = torch.cat((z.detach(), emb), dim=1)
-
-        y_multiband, nsf_source = self.decoder(z_cat,
+        y_multiband, nsf_source = self.decoder(z.detach(),
+                                               emb, 
                                                f0.unsqueeze(1),
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
@@ -166,24 +163,20 @@ class RAVE(BaseModel):
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)   
 
-        loudness = extract_loudness(audio_data, sr=self.sample_rate)
-        loudness = (10 ** (loudness / 20))
+        loudness = extract_rms(audio_data, 1024, upsample=False)
         
         z = self.encoder(audio_multiband[:, :6, :])
-       
-        emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z.shape[-1])
-
-        z_cat = torch.cat((z.detach(), emb), dim=1)
-
-        y_multiband, nsf_source = self.decoder(z_cat,
+        emb = self.speaker_encoder(audio_multiband)
+        y_multiband, nsf_source = self.decoder(z.detach(),
+                                               emb,
                                                f0.unsqueeze(1),
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
         
         y = self.pqmf.inverse(y_multiband)
         
-        return {"audio": y[..., :length]}
+        return {"audio": y[..., :length],
+                "harm": nsf_source}
 
 
     def predict(self, audio_data: torch.Tensor, target: torch.Tensor, pitch_mode='mine'):

@@ -300,11 +300,14 @@ def threshold(periodicity: torch.Tensor, value: float=0.065):
     return periodicity > value
 
 class ExcitationGenerator(torch.nn.Module):
-    def __init__(self, sampling_rate, global_amp=0.25, block_size=1024):
+    def __init__(self, sampling_rate, global_amp=0.25, block_size=1024, is_pulse=True, duty_cycle=0.5):
         super().__init__()
         self.sampling_rate = sampling_rate
         self.global_amp = global_amp
         self.block_size = block_size
+        self.block_size = block_size
+        self.duty_cycle = duty_cycle  # Controls pulse width (0 to 1)
+        self.is_pulse = is_pulse
         self.prev_phase = None
         self.prev_pitch = None
         
@@ -329,15 +332,19 @@ class ExcitationGenerator(torch.nn.Module):
         phase_inc = 2 * math.pi * pitch / self.sampling_rate
         prev_phase = self.prev_phase.unsqueeze(-1)  # [B, 1, 1]
         omega = torch.cumsum(phase_inc, dim=-1) + prev_phase
-        
-        signal = torch.sin(omega)
+
+        if self.is_pulse:
+            norm_phase = (omega / (2 * math.pi)) % 1.0
+            signal = torch.where(norm_phase < self.duty_cycle, torch.ones_like(norm_phase), -torch.ones_like(norm_phase))
+        else:
+            signal = torch.sin(omega)
         
         self.prev_phase = omega[:, :, -1] % (2 * math.pi)
         
         noise = torch.rand_like(signal) * 2. - 1.
-        noise = noise * ap * loudness
+        noise = ((noise * 2) * ap) * loudness
         
-        return (signal + noise) * self.global_amp
+        return (signal * 0.5 + noise) * 0.5
 
 
 class AddUpDownSampling(nn.Module):
@@ -377,6 +384,20 @@ class AddUpDownSampling(nn.Module):
         return output
 
 
+class FiLM(torch.nn.Module):
+
+    def __init__(self, dim: int, conditioning_dim: int):
+        super().__init__()
+        self.to_gamma = torch.nn.Linear(conditioning_dim, dim)
+        self.to_beta = torch.nn.Linear(conditioning_dim, dim)
+
+    def forward(self, x: torch.Tensor, condition: torch.Tensor):
+        gamma = self.to_gamma(condition).unsqueeze(dim=-1)
+        beta = self.to_beta(condition).unsqueeze(dim=-1)
+        x = x * gamma + beta
+        return x
+
+
 class GeneratorV2Sine(nn.Module):
 
     def __init__(
@@ -407,9 +428,12 @@ class GeneratorV2Sine(nn.Module):
         self.ex_generator = ExcitationGenerator(sampling_rate=sampling_rate,
                                                 global_amp=0.25)
 
-        self.conditioning_stages = [2, 6, 11, 16]
-
+        self.conditioning_stages_ex = [2, 6, 11, 16] 
         sine_conv_kernels = [512, 256, 64, 16]
+
+        self.conditioning_stages_film = [0, 5, 10, 15]
+        film_conv_channels = [64, 768, 384, 192]
+
         downsampling_channels = []
 
         net = []
@@ -471,10 +495,14 @@ class GeneratorV2Sine(nn.Module):
 
         self.net = cc.CachedSequential(*net)
 
+        self.film_layers = nn.ModuleList()
+        for i, _ in enumerate(self.conditioning_stages_film):
+            self.film_layers.append(FiLM(film_conv_channels[i], 256))
+        
         self.conditioning_layers = nn.ModuleList()
         
         add_delay = True
-        for i, stage in enumerate(self.conditioning_stages):
+        for i, stage in enumerate(self.conditioning_stages_ex):
             if i % 2 == 0:
                 add_delay = True
             else:
@@ -489,6 +517,7 @@ class GeneratorV2Sine(nn.Module):
 
     def forward(self,
                 x: torch.Tensor,
+                emb: torch.Tensor,
                 f0: torch.Tensor,
                 periodicity: torch.Tensor,
                 loudness: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -497,9 +526,21 @@ class GeneratorV2Sine(nn.Module):
         
         iterator = 0
 
-        for i, layer in enumerate(self.net):
-            x = layer(x)
-            if i in self.conditioning_stages:
+        for i, layer in enumerate(self.net):   
+            
+            if i in self.conditioning_stages_film:
+                if i == 0:
+                    x = self.film_layers[0](x, emb)
+                elif i == 5:
+                    x = self.film_layers[1](x, emb)
+                elif i == 10:
+                    x = self.film_layers[2](x, emb)
+                else:
+                    x = self.film_layers[3](x, emb)
+
+            x = layer(x)    
+            
+            if i in self.conditioning_stages_ex:
                 if i == 2:
                     ex_down = self.conditioning_layers[0](x, har_source)
                 elif i == 6:
@@ -507,7 +548,7 @@ class GeneratorV2Sine(nn.Module):
                 elif i == 11:
                     ex_down = self.conditioning_layers[2](x, har_source)
                 else:
-                    ex_down = self.conditioning_layers[3](x, har_source)
+                    ex_down = self.conditioning_layers[3](x, har_source)       
                     
                 x = x + ex_down
                 iterator += 1

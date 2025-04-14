@@ -6,6 +6,7 @@ from scipy.fft import dct, idct
 import json
 import os
 import argparse
+from typing import Optional
 import torch.nn.functional as F
 from torchfcpe import spawn_bundled_infer_model
 
@@ -96,3 +97,21 @@ def extract_loudness(signal, sr: int, block_size: int=1024, n_fft: int=1024):
     S = torch.mean(S, 1)[..., :-1]
 
     return S
+
+def extract_rms(signal: torch.Tensor, frame_size: int, hop_size: Optional[int] = None, upsample: Optional[str] = True) -> torch.Tensor:
+
+    if hop_size is None:
+        hop_size = frame_size
+        
+    batch_size, _, signal_length = signal.shape
+    signal = signal.reshape(batch_size, signal_length)
+    frames = signal.unfold(1, frame_size, hop_size)
+    frames_squared = torch.square(frames)
+    mean_squared = torch.mean(frames_squared, dim=2)
+    rms_values = torch.sqrt(mean_squared)
+
+    if upsample:
+        rms_values = upsample(rms_values.unsqueeze(-1), frame_size)
+        return rms_values.transpose(2,1)
+    else:
+        return rms_values
