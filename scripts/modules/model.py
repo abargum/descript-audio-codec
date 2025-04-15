@@ -9,6 +9,7 @@ from audiotools.ml import BaseModel
 from .decoder import Generator
 from .encoder import SpeakerEncoder, Encoder, PitchEncoder
 from .pqmf import CachedPQMF as PQMF
+from .rvq import SplitRVQ
 
 from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
 from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_rms
@@ -16,7 +17,7 @@ from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency,
 class CrossEntropyProjection(nn.Module):
     def __init__(self, channels):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(channels)
+        self.layer_norm = torch.nn.LayerNorm(64)
         self.proj = nn.Conv1d(channels, 100, 1, bias=False)
         
     def forward(self, x):
@@ -29,7 +30,7 @@ class VoiceModel(BaseModel):
 
     def __init__(
         self,
-        latent_size_content_encoder = 64,
+        latent_size_content_encoder = 128,
         latent_size_pitch_encoder = 1440,
         capacity_content_encoder = 32,
         capacity_pitch_encoder = 16,
@@ -84,14 +85,15 @@ class VoiceModel(BaseModel):
         self.speaker_encoder.load_state_dict(spk_state)
         self.speaker_encoder.eval()
 
+        self.split_rvq = SplitRVQ(num_quantizers=7, latent_dim=latent_size_content_encoder, codebook_size=1024)
         self.ce_projection = CrossEntropyProjection(channels=latent_size_content_encoder)
 
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
         parametric_eq = SloppyPEQ(sample_rate=self.sample_rate, gain_range=[-15.0, 15.0])
 
-        transforms = {"shift": shift_pitch, "peq": parametric_eq, "noise": add_noise}
-        probabilities = {"shift": 1.0, "peq": 0.5, "noise": 0.5}
+        transforms = {"peq": parametric_eq, "noise": add_noise}
+        probabilities = {"peq": 0.5, "noise": 0.5}
 
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
 
@@ -136,9 +138,10 @@ class VoiceModel(BaseModel):
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
         z = self.encoder(audio_multiband_aug[:, :6, :])
 
-        projected_z = self.ce_projection(z)
+        z, vq_out, rvq_loss = self.split_rvq(z)
+        projected_z = self.ce_projection(vq_out)
         
-        z = z.detach()
+        #z = z.detach()
        
         speaker_emb = self.speaker_encoder(audio_multiband)
 
@@ -156,6 +159,7 @@ class VoiceModel(BaseModel):
             "p_audio": audio_aug.unsqueeze(1),
             "x_multiband": audio_multiband,
             "y_multiband": y_multiband,
+            "rvq_loss": rvq_loss,
         }
 
     def get_val_audio(self, audio_data: torch.Tensor):
@@ -171,8 +175,10 @@ class VoiceModel(BaseModel):
 
         loudness = extract_rms(audio_data, self.downsampling_rate, do_upsample=False)
         
-        z = self.encoder(audio_multiband[:, :6, :])        
-        z = z.detach()
+        z = self.encoder(audio_multiband[:, :6, :]) 
+        z = self.split_rvq(z)[0]
+        
+        #z = z.detach()
        
         speaker_emb = self.speaker_encoder(audio_multiband)
 

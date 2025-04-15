@@ -185,14 +185,15 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection.parameters())
+        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection.parameters()) + list(generator.split_rvq.parameters())
+        
         optimizer_g = AdamW(params_to_update, use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
         
     with argbind.scope(args, "discriminator"):
         optimizer_d = AdamW(discriminator.parameters(), use_zero=accel.use_ddp)
         scheduler_d = ExponentialLR(optimizer_d)
-
+        
     if "optimizer.pth" in g_extra:
         optimizer_g.load_state_dict(g_extra["optimizer.pth"])
     if "scheduler.pth" in g_extra:
@@ -306,6 +307,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         y_multiband = AudioSignal(rearrange(out["y_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
 
         unit_loss = torch.nn.functional.cross_entropy(projected_z, target_units.type(torch.int64).to(recons.device))
+        unit_loss += out["rvq_loss"]
 
     if state.warmed_up:
         with accel.autocast():
