@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from audiotools.ml import BaseModel
 
 from .decoder import Generator
-from .encoder import SpeakerEncoder, Encoder
+from .encoder import SpeakerEncoder, Encoder, PitchEncoder
 from .pqmf import CachedPQMF as PQMF
 
 from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
@@ -31,9 +31,9 @@ class VoiceModel(BaseModel):
         self,
         latent_size_content_encoder = 64,
         latent_size_pitch_encoder = 1440,
-        capacity_content_encoder = 64,
-        capacity_pitch_encoder = 32,
-        capacity_decoder = 96,
+        capacity_content_encoder = 32,
+        capacity_pitch_encoder = 16,
+        capacity_decoder = 64,
         n_out = 1,
         kernel_size = 3,
         ratios = [4, 4, 2, 2],
@@ -67,7 +67,7 @@ class VoiceModel(BaseModel):
                                        dilations = dilations
         )
 
-        self.pitch_encoder = Encoder(data_size = 6,
+        self.pitch_encoder = PitchEncoder(data_size = 6,
                                             capacity = capacity_pitch_encoder,
                                             ratios = ratios,
                                             latent_size = latent_size_pitch_encoder,
@@ -76,7 +76,7 @@ class VoiceModel(BaseModel):
                                             dilations = dilations
         )
 
-        self.pitch_encoder.load_state_dict(torch.load(f"scripts/utils/caus_pitch_enc.pth", weights_only=True))
+        self.pitch_encoder.load_state_dict(torch.load(f"scripts/utils/caus_pitch_enc_16.pth", weights_only=True))
         self.pitch_encoder.eval()
 
         self.speaker_encoder = SpeakerEncoder()
@@ -130,7 +130,7 @@ class VoiceModel(BaseModel):
         f0 = torch.argmax(pitch_logits, dim=1)
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)
-        loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
+        loudness = extract_rms(audio_data, self.downsampling_rate, do_upsample=False)
 
         audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
@@ -169,7 +169,7 @@ class VoiceModel(BaseModel):
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)   
 
-        loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
+        loudness = extract_rms(audio_data, self.downsampling_rate, do_upsample=False)
         
         z = self.encoder(audio_multiband[:, :6, :])        
         z = z.detach()
@@ -206,7 +206,7 @@ class VoiceModel(BaseModel):
             f0_in = torch.argmax(pitch_logits, dim=1)
             f0_in = bins_to_frequency(f0_in)
 
-        loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
+        loudness = extract_rms(audio_data, self.downsampling_rate, do_upsample=False)
         
         in_mean, in_std = extract_f0_mean_std(f0_in)
         

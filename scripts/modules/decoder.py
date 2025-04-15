@@ -78,6 +78,67 @@ class DilatedUnit(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
+
+
+class LayerNorm1D(nn.Module):
+    """ LayerNorm that supports channels_first (batch_size, channels, frames)"""
+    def __init__(self, normalized_shape, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(normalized_shape))
+        self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        self.eps = eps
+        self.normalized_shape = (normalized_shape, )
+    
+    def forward(self, x):
+        u = x.mean(1, keepdim=True)
+        s = (x - u).pow(2).mean(1, keepdim=True)
+        x = (x - u) / torch.sqrt(s + self.eps)
+        x = self.weight[:, None] * x + self.bias[:, None]
+        return x
+
+class GRN1D(nn.Module):
+    """ GRN (Global Response Normalization) layer for 1D inputs (batch_size, channels, frames)"""
+    def __init__(self, dim):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.zeros(1, dim, 1))
+        self.beta = nn.Parameter(torch.zeros(1, dim, 1))
+        
+    def forward(self, x):
+        Gx = torch.norm(x, p=2, dim=1, keepdim=True)
+        Nx = Gx / (Gx.mean(dim=-1, keepdim=True) + 1e-6)
+        return self.gamma * (x * Nx) + self.beta + x  
+
+class ConvNextV2(nn.Module):
+    
+    def __init__(
+        self,
+        dim: int,
+        kernel_size: int,
+        dilation: int,
+    ) -> None:
+        super().__init__()
+        net = [
+            Snake(dim),
+            normalization(
+                cc.Conv1d(dim,
+                          dim,
+                          kernel_size=kernel_size,
+                          dilation=dilation,
+                          padding=cc.get_padding(
+                              kernel_size,
+                              dilation=dilation, mode=conv_mode
+                          ))),
+            LayerNorm1D(dim),
+            normalization(cc.Conv1d(dim, 4*dim, kernel_size=1)),
+            nn.GELU(),
+            GRN1D(4*dim),
+            normalization(cc.Conv1d(4*dim, dim, kernel_size=1)),
+        ]
+        self.net = cc.CachedSequential(*net)
+        self.cumulative_delay = net[1].cumulative_delay
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
         
 
 def normalize_dilations(dilations: Union[Sequence[int],
@@ -199,32 +260,58 @@ class FiLM(torch.nn.Module):
 
     def __init__(self, dim: int, conditioning_dim: int):
         super().__init__()
-        self.relu = torch.nn.LeakyReLU(0.2)
         self.to_gamma = torch.nn.Linear(conditioning_dim, dim)
         self.to_beta = torch.nn.Linear(conditioning_dim, dim)
 
     def forward(self, x: torch.Tensor, condition: torch.Tensor):
-        x = self.relu(x)
         gamma = self.to_gamma(condition).unsqueeze(dim=-1)
         beta = self.to_beta(condition).unsqueeze(dim=-1)
         x = x * gamma + beta
         return x
 
 
+# --- Wrapper interface for scripting ---
+class WrapperBase(nn.Module):
+    def forward(self, x: torch.Tensor, speaker: torch.Tensor, excitation: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+class FiLMWrapper(WrapperBase):
+    def __init__(self, film: nn.Module):
+        super().__init__()
+        self.film = film
+
+    def forward(self, x: torch.Tensor, speaker: torch.Tensor, excitation: torch.Tensor) -> torch.Tensor:
+        return self.film(x, speaker)
+
+class AddUpDownSamplingWrapper(WrapperBase):
+    def __init__(self, mod: nn.Module):
+        super().__init__()
+        self.mod = mod
+
+    def forward(self, x: torch.Tensor, speaker: torch.Tensor, excitation: torch.Tensor) -> torch.Tensor:
+        return self.mod(x, excitation)
+
+class GenericWrapper(WrapperBase):
+    def __init__(self, mod: nn.Module):
+        super().__init__()
+        self.mod = mod
+
+    def forward(self, x: torch.Tensor, speaker: torch.Tensor, excitation: torch.Tensor) -> torch.Tensor:
+        return self.mod(x)
+
 class SequentialWithConditioning(cc.CachedSequential):
-    def forward(self, x, speaker, excitation):
-        for module in self:
-            if isinstance(module, FiLM):
-                x = module(x, speaker)
-            elif isinstance(module, AddUpDownSampling):
-                x = module(x, excitation)
-            else:
-                x = module(x)
+    def __init__(self, *modules: WrapperBase):
+        super().__init__()
+        self.modules_list = nn.ModuleList(modules)
+
+    def forward(self, x: torch.Tensor, speaker: torch.Tensor, excitation: torch.Tensor) -> torch.Tensor:
+        for mod in self.modules_list:
+            x = mod(x, speaker, excitation)
         return x
+        
 
-
+# --- Wrapped generator for scripting ---
 class Generator(nn.Module):
-
     def __init__(
         self,
         data_size: int,
@@ -238,88 +325,88 @@ class Generator(nn.Module):
         speaker_size: int = 256,
         recurrent_layer: Optional[Callable[[], nn.Module]] = None,
         amplitude_modulation: bool = True,
-        activation: Callable[[int], nn.Module] = lambda dim: nn.LeakyReLU(.2),
+        activation: Callable[[int], nn.Module] = lambda dim: nn.LeakyReLU(0.2),
         adain: Optional[Callable[[int], nn.Module]] = None,
     ) -> None:
         super().__init__()
+
         dilations_list = normalize_dilations(dilations, ratios)[::-1]
         ratios = ratios[::-1]
 
-        if keep_dim:
-            num_channels = np.prod(ratios) * capacity
-        else:
-            num_channels = 2**len(ratios) * capacity
+        num_channels = np.prod(ratios) * capacity if keep_dim else 2**len(ratios) * capacity
 
         self.sampling_rate = sampling_rate
-        self.ex_generator = ExcitationGenerator(sampling_rate=sampling_rate,
-                                                global_amp=0.25,
-                                                is_pulse=True)
+        self.ex_generator = ExcitationGenerator(sampling_rate=sampling_rate, global_amp=0.25)
 
-        self.conditioning_stages = [3, 9, 16]
+        self.conditioning_stages = [3, 9, 16, 23]
         sine_conv_kernels = [512, 256, 64, 16]
         
         net = []
 
         if recurrent_layer is not None:
-            net.append(recurrent_layer(latent_size))
+            net.append(GenericWrapper(recurrent_layer(latent_size)))
 
-        net.append(FiLM(latent_size, speaker_size))
+        net.append(FiLMWrapper(FiLM(latent_size, speaker_size)))
 
-        net.append(
+        net.append(GenericWrapper(
             normalization(
                 cc.Conv1d(
                     latent_size,
                     num_channels,
                     kernel_size=kernel_size,
                     padding=cc.get_padding(kernel_size, mode=conv_mode),
-                )), )
+                )
+            )
+        ))
 
         add_delay = True
 
         for i, (r, dilations) in enumerate(zip(ratios, dilations_list)):
-            # ADD UPSAMPLING UNIT
-            if keep_dim:
-                out_channels = num_channels // r
-            else:
-                out_channels = num_channels // 2
-            net.append(Snake(num_channels))
-            net.append(
+            out_channels = num_channels // r if keep_dim else num_channels // 2
+
+            net.append(GenericWrapper(Snake(num_channels)))
+            net.append(GenericWrapper(
                 normalization(
                     cc.ConvTranspose1d(num_channels,
                                        out_channels,
                                        2 * r,
                                        stride=r,
-                                       padding=r // 2)))
+                                       padding=r // 2)
+                )
+            ))
 
-            # ADD EXCITATION CONDITIONING, DO NOT CONDITION LAST LAYER
             if i < len(self.conditioning_stages):
-                if i % 2 == 0:
-                    add_delay = True
+                add_delay = (i % 2 == 0)
+                if isinstance(net[self.conditioning_stages[i]], GenericWrapper):
+                    delay_mod = net[self.conditioning_stages[i]].mod
                 else:
-                    add_delay = False
+                    delay_mod = net[self.conditioning_stages[i]]
                     
-                net.append(AddUpDownSampling(out_channels,
-                                             sine_conv_kernels[i],
-                                             net[self.conditioning_stages[i]].cumulative_delay,
-                                             add_delay=add_delay))
+                net.append(AddUpDownSamplingWrapper(
+                    AddUpDownSampling(out_channels,
+                                      sine_conv_kernels[i],
+                                      delay_mod.cumulative_delay,
+                                      add_delay=add_delay)
+                ))
 
             num_channels = out_channels
 
-            # ADD RESIDUAL DILATED UNITS
             for d in dilations:
                 if adain is not None:
-                    net.append(adain(num_channels))
-                net.append(
+                    net.append(GenericWrapper(adain(num_channels)))
+                net.append(GenericWrapper(
                     Residual(
-                        DilatedUnit(
+                        ConvNextV2(
                             dim=num_channels,
                             kernel_size=kernel_size,
                             dilation=d,
-                        )))
+                        )
+                    )
+                ))
 
-            net.append(FiLM(num_channels, speaker_size))
+            net.append(FiLMWrapper(FiLM(num_channels, speaker_size)))
 
-        net.append(Snake(num_channels))
+        net.append(GenericWrapper(Snake(num_channels)))
 
         waveform_module = normalization(
             cc.Conv1d(
@@ -327,23 +414,24 @@ class Generator(nn.Module):
                 data_size * 2 if amplitude_modulation else data_size,
                 kernel_size=kernel_size * 2 + 1,
                 padding=cc.get_padding(kernel_size * 2 + 1, mode=conv_mode),
-            ))
+            )
+        )
 
-        net.append(waveform_module)
+        net.append(GenericWrapper(waveform_module))
 
         self.net = SequentialWithConditioning(*net)
-
         self.amplitude_modulation = amplitude_modulation
 
-    def forward(self,
-                x: torch.Tensor,
-                speaker: torch.Tensor,
-                f0: torch.Tensor,
-                periodicity: torch.Tensor,
-                loudness: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        x: torch.Tensor,
+        speaker: torch.Tensor,
+        f0: torch.Tensor,
+        periodicity: torch.Tensor,
+        loudness: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
 
         har_source = self.ex_generator(f0, periodicity, loudness)
-
         x = self.net(x, speaker, har_source)
 
         if self.amplitude_modulation:

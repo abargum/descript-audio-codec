@@ -99,12 +99,12 @@ def extract_loudness(signal, sr: int, block_size: int=1024, n_fft: int=1024):
 
     return S
 
-def upsample(signal, factor):
+def upsample(signal, factor: int):
     signal = signal.permute(0, 2, 1)
     signal = nn.functional.interpolate(signal, size=signal.shape[-1] * factor)
     return signal.permute(0, 2, 1)
 
-def extract_rms(signal: torch.Tensor, frame_size: int, hop_size: Optional[int] = None, upsample: Optional[str] = True) -> torch.Tensor:
+def extract_rms(signal: torch.Tensor, frame_size: int, hop_size: Optional[int] = None, do_upsample: Optional[bool] = False) -> torch.Tensor:
 
     if hop_size is None:
         hop_size = frame_size
@@ -116,7 +116,7 @@ def extract_rms(signal: torch.Tensor, frame_size: int, hop_size: Optional[int] =
     mean_squared = torch.mean(frames_squared, dim=2)
     rms_values = torch.sqrt(mean_squared)
 
-    if upsample:
+    if do_upsample is not None and do_upsample:
         rms_values = upsample(rms_values.unsqueeze(-1), frame_size)
         return rms_values.transpose(2,1)
     else:

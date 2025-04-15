@@ -84,6 +84,69 @@ class DilatedUnit(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
+
+
+class LayerNorm1D(nn.Module):
+    """ LayerNorm that supports channels_first (batch_size, channels, frames)"""
+    def __init__(self, normalized_shape, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(normalized_shape))
+        self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        self.eps = eps
+        self.normalized_shape = (normalized_shape, )
+    
+    def forward(self, x):
+        u = x.mean(1, keepdim=True)
+        s = (x - u).pow(2).mean(1, keepdim=True)
+        x = (x - u) / torch.sqrt(s + self.eps)
+        x = self.weight[:, None] * x + self.bias[:, None]
+        return x
+
+
+class GRN1D(nn.Module):
+    """ GRN (Global Response Normalization) layer for 1D inputs (b, c, l)"""
+    def __init__(self, dim):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.zeros(1, dim, 1))
+        self.beta = nn.Parameter(torch.zeros(1, dim, 1))
+        
+    def forward(self, x):
+        Gx = torch.norm(x, p=2, dim=1, keepdim=True)
+        Nx = Gx / (Gx.mean(dim=-1, keepdim=True) + 1e-6)
+        return self.gamma * (x * Nx) + self.beta + x  
+
+
+class ConvNextV2(nn.Module):
+    
+    def __init__(
+        self,
+        dim: int,
+        kernel_size: int,
+        dilation: int,
+    ) -> None:
+        super().__init__()
+        net = [
+            nn.LeakyReLU(.2),
+            normalization(
+                cc.Conv1d(dim,
+                          dim,
+                          kernel_size=kernel_size,
+                          dilation=dilation,
+                          padding=cc.get_padding(
+                              kernel_size,
+                              dilation=dilation, mode=conv_mode
+                          ))),
+            LayerNorm1D(dim),
+            normalization(cc.Conv1d(dim, 4*dim, kernel_size=1)),
+            nn.GELU(),
+            GRN1D(4*dim),
+            normalization(cc.Conv1d(4*dim, dim, kernel_size=1)),
+        ]
+        self.net = cc.CachedSequential(*net)
+        self.cumulative_delay = net[1].cumulative_delay
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
         
 
 def normalize_dilations(dilations: Union[Sequence[int],
@@ -92,6 +155,98 @@ def normalize_dilations(dilations: Union[Sequence[int],
     if isinstance(dilations[0], int):
         dilations = [dilations for _ in ratios]
     return dilations
+
+
+class PitchEncoder(nn.Module):
+
+    def __init__(
+        self,
+        data_size: int,
+        capacity: int,
+        ratios: Sequence[int],
+        latent_size: int,
+        n_out: int,
+        kernel_size: int,
+        dilations: Sequence[int],
+        keep_dim: bool = False,
+        recurrent_layer: Optional[Callable[[], nn.Module]] = None,
+        spectrogram: Optional[Callable[[], Spectrogram]] = None,
+        activation: Callable[[int], nn.Module] = lambda dim: nn.LeakyReLU(.2),
+        adain: Optional[Callable[[int], nn.Module]] = None,
+    ) -> None:
+        super().__init__()
+        dilations_list = normalize_dilations(dilations, ratios)
+
+        if spectrogram is not None:
+            self.spectrogram = spectrogram()
+        else:
+            self.spectrogram = None
+
+        net = [
+            normalization(
+                cc.Conv1d(
+                    data_size,
+                    capacity,
+                    kernel_size=kernel_size * 2 + 1,
+                    padding=cc.get_padding(kernel_size * 2 + 1, mode=conv_mode),
+                )),
+        ]
+
+        num_channels = capacity
+        for r, dilations in zip(ratios, dilations_list):
+            # ADD RESIDUAL DILATED UNITS
+            for d in dilations:
+                if adain is not None:
+                    net.append(adain(dim=num_channels))
+                net.append(
+                    Residual(
+                        DilatedUnit(
+                            dim=num_channels,
+                            kernel_size=kernel_size,
+                            dilation=d,
+                        )))
+
+            # ADD DOWNSAMPLING UNIT
+            net.append(activation(num_channels))
+
+            if keep_dim:
+                out_channels = num_channels * r
+            else:
+                out_channels = num_channels * 2
+            net.append(
+                normalization(
+                    cc.Conv1d(
+                        num_channels,
+                        out_channels,
+                        kernel_size=2 * r,
+                        stride=r,
+                        padding=cc.get_padding(2 * r, r, mode=conv_mode),
+                    )))
+
+            num_channels = out_channels
+
+        net.append(activation(num_channels))
+        net.append(
+            normalization(
+                cc.Conv1d(
+                    num_channels,
+                    latent_size * n_out,
+                    kernel_size=kernel_size,
+                    padding=cc.get_padding(kernel_size, mode=conv_mode),
+                )))
+
+        if recurrent_layer is not None:
+            net.append(recurrent_layer(latent_size * n_out))
+
+        self.net = cc.CachedSequential(*net)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.spectrogram is not None:
+            x = self.spectrogram(x[:, 0])[..., :-1]
+            x = torch.log1p(x)
+
+        x = self.net(x)
+        return x
 
 
 class Encoder(nn.Module):
@@ -137,7 +292,7 @@ class Encoder(nn.Module):
                     net.append(adain(dim=num_channels))
                 net.append(
                     Residual(
-                        DilatedUnit(
+                        ConvNextV2(
                             dim=num_channels,
                             kernel_size=kernel_size,
                             dilation=d,
@@ -312,5 +467,3 @@ class SpeakerEncoder(nn.Module):
         x = self.fc6(x)
 
         return x 
-
-        return z_for_CE
