@@ -211,8 +211,7 @@ class RAVE(BaseModel):
         z = self.encoder(audio_multiband[:, :6, :])
 
         with torch.no_grad():
-            emb = self.speaker_encoder(target_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z.shape[-1])
+            emb = self.speaker_encoder(target_multiband)
 
         f0_in[f0_in == 0] = float('nan')
         
@@ -221,7 +220,8 @@ class RAVE(BaseModel):
         source_pitch = source_pitch * 1.0
         source_pitch[torch.isnan(source_pitch)] = 0
 
-        y_multiband, nsf_source = self.decoder(torch.cat((z, emb.to(z)), dim=1),
+        y_multiband, nsf_source = self.decoder(z,
+                                               emb,
                                                source_pitch.to(z),
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
