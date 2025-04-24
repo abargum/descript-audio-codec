@@ -335,3 +335,4 @@ class SplitRVQ(nn.Module):
         rvq_out, out_loss, _ = self.rvq(x)
         out = vq_out + rvq_out
         return out, vq_out, out_loss
+
