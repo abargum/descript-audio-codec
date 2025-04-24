@@ -71,7 +71,7 @@ def process_audio_directory(base_dirs, output_path, sample_rate):
 
 # Example usage
 base_directories = [
-    "vctk-small",
+    "VCTK-Corpus/wav48",
     "val-set-test",
 ]
 sample_rate = 44100

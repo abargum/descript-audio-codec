@@ -178,7 +178,7 @@ def load(
     param_model = count_parameters(generator)
     param_disc = count_parameters(discriminator)
 
-    tracker.print(generator)
+    # tracker.print(generator)
     # tracker.print(discriminator)
 
     generator = accel.prepare_model(generator)
@@ -301,13 +301,15 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
-        projected_z = out["projected_z"]
 
         x_multiband = AudioSignal(rearrange(out["x_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
         y_multiband = AudioSignal(rearrange(out["y_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
 
+        projected_z = out["projected_z"]
         unit_loss = torch.nn.functional.cross_entropy(projected_z, target_units.type(torch.int64).to(recons.device))
-        unit_loss += out["rvq_loss"]
+        
+        commitment_loss = out["commitment_loss"]
+        #codebook_loss = out["codebook_loss"]
 
     if state.warmed_up:
         with accel.autocast():
@@ -329,6 +331,8 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         output["gen/mel"] = state.mel_loss(recons, signal)
         output["gen/waveform"] = state.waveform_loss(recons, signal)
         output["gen/unit"] = unit_loss
+        output["gen/commitment"] = commitment_loss
+        #output["gen/codebook"] = codebook_loss
         if state.warmed_up:
            (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
         output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
@@ -463,6 +467,8 @@ def train(
           "gen/mel": 12.0,
           "gen/multiband": 3.0,
           "gen/unit": 1.0,
+          "gen/commitment": 0.25,
+          "gen/codebook": 1.0,
           "adv/feat_loss": 2.0,
           "adv/gen_loss": 1.0,
     },

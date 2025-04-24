@@ -338,15 +338,13 @@ class Generator(nn.Module):
         self.sampling_rate = sampling_rate
         self.ex_generator = ExcitationGenerator(sampling_rate=sampling_rate, global_amp=0.25)
 
-        self.conditioning_stages = [3, 9, 16, 23]
+        self.conditioning_stages = [2, 8, 15, 22]
         sine_conv_kernels = [512, 256, 64, 16]
         
         net = []
 
         if recurrent_layer is not None:
             net.append(GenericWrapper(recurrent_layer(latent_size)))
-
-        net.append(FiLMWrapper(FiLM(latent_size, speaker_size)))
 
         net.append(GenericWrapper(
             normalization(

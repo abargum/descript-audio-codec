@@ -319,10 +319,16 @@ class ResidualVectorQuantization(nn.Module):
 
 
 class SplitRVQ(nn.Module):
-    def __init__(self, num_quantizers, latent_dim, codebook_size):
+    def __init__(self, num_quantizers, latent_dim, codebook_dim, codebook_size):
         super().__init__()
-        self.vq = VectorQuantization(dim=latent_dim, codebook_size=codebook_size)
-        self.rvq = ResidualVectorQuantization(num_quantizers=num_quantizers, dim=latent_dim, codebook_size=codebook_size)
+        self.vq = VectorQuantization(dim=latent_dim,
+                                     codebook_dim=codebook_dim, 
+                                     codebook_size=codebook_size)
+        
+        self.rvq = ResidualVectorQuantization(num_quantizers=num_quantizers,
+                                              dim=latent_dim,
+                                              codebook_dim=codebook_dim,
+                                              codebook_size=codebook_size)
         
     def forward(self, x):
         vq_out, _, _ = self.vq(x)

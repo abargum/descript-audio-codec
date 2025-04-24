@@ -15,10 +15,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from absl import flags
 import librosa
-from rave.rave_model import RAVE
 
-import rave.blocks
-import rave.resampler
+from modules.model import VoiceModel
 
 import random
 import matplotlib.pyplot as plt
@@ -60,7 +58,7 @@ def extract_speaker_emb(file_paths, speaker_encoder, pqmf):
     embeddings = np.array(embeddings).reshape(-1, 256)
     return embeddings, labels
 
-def extract_content_emb(speakers, encoder, pqmf):
+def extract_content_emb(speakers, encoder, pqmf, rvq):
     embeddings = []
     labels = []
     for file in speakers:
@@ -71,9 +69,10 @@ def extract_content_emb(speakers, encoder, pqmf):
             padding = torch.zeros(1, 1, 131072 - emb_audio.shape[-1])
             emb_audio = torch.cat([emb_audio, padding], dim=-1)
         audio_multiband = pqmf(emb_audio)
-        embedding = encoder(audio_multiband[:, :6, :])
-        for i in range(embedding.shape[-1]):
-            frame = embedding[:, :, i]
+        z = encoder(audio_multiband[:, :6, :])
+        z = rvq(z)[0]
+        for i in range(z.shape[-1]):
+            frame = z[:, :, i]
             embeddings.append(frame.detach().cpu().numpy())
             labels.append(speaker_id)
     embeddings = np.array(embeddings).reshape(-1, 64)
@@ -114,7 +113,7 @@ def main():
     
     cc.use_cached_conv(True)
 
-    generator = RAVE()
+    generator = VoiceModel()
 
     kwargs = {
             "folder": f"{args.run}",
@@ -130,8 +129,7 @@ def main():
     sample_rate = generator.sample_rate
 
     x = torch.zeros(1, 1, 2**17).to(torch.device('cpu'))
-    p = torch.zeros(1, 128).to(torch.device('cpu'))
-    y = generator.predict_no_pitch(x, x, p)
+    y = generator.get_val_audio(x)['audio']
     print("Shape of test output:", y.shape)
 
     phrase1 = "../vctk-small/p225/p225_003_mic1.flac"
@@ -141,13 +139,15 @@ def main():
     phrases = [phrase1, phrase2, phrase3, phrase4]
 
     encoder = generator.encoder
+    rvq = generator.split_rvq
     speaker_encoder = generator.speaker_encoder
     pqmf = generator.pqmf
     
     print("Processing content embeddings...")
-    frames, labels = extract_content_emb(phrases, encoder, pqmf)
-    reduce_and_plot_tsne(frames, labels, name="images/tsne_frames.png")
-    
+    frames, labels = extract_content_emb(phrases, encoder, pqmf, rvq)
+    reduce_and_plot_tsne(frames, labels, name="plots/tsne_frames_rvq.png")
+
+    """
     folder_path = "../vctk-small"
     num_files = 20
 
@@ -155,8 +155,7 @@ def main():
     random_files = get_random_files(folder_path, num_files)
     embeddings, labels = extract_speaker_emb(random_files, speaker_encoder, pqmf)
     reduce_and_plot_tsne(embeddings, labels, name="images/tsne_speakers.png")
-
-
+    """
 
 if __name__ == "__main__":
     main()

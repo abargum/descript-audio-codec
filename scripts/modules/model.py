@@ -33,7 +33,7 @@ class VoiceModel(BaseModel):
         latent_size_content_encoder = 128,
         latent_size_pitch_encoder = 1440,
         capacity_content_encoder = 32,
-        capacity_pitch_encoder = 32,
+        capacity_pitch_encoder = 16,
         capacity_decoder = 64,
         n_out = 1,
         kernel_size = 3,
@@ -62,7 +62,7 @@ class VoiceModel(BaseModel):
         self.decoder = Generator(data_size = 16,
                                        capacity = capacity_decoder,
                                        ratios = ratios,
-                                       latent_size = latent_size_content_encoder,
+                                       latent_size = latent_size_content_encoder + 256,
                                        kernel_size = kernel_size,
                                        sampling_rate = sampling_rate,
                                        dilations = dilations
@@ -77,7 +77,7 @@ class VoiceModel(BaseModel):
                                             dilations = dilations
         )
 
-        self.pitch_encoder.load_state_dict(torch.load(f"scripts/utils/caus_pitch_enc.pth", weights_only=True))
+        self.pitch_encoder.load_state_dict(torch.load(f"scripts/utils/caus_pitch_enc_16.pth", weights_only=True))
         self.pitch_encoder.eval()
 
         self.speaker_encoder = SpeakerEncoder()
@@ -85,7 +85,11 @@ class VoiceModel(BaseModel):
         self.speaker_encoder.load_state_dict(spk_state)
         self.speaker_encoder.eval()
 
-        self.split_rvq = SplitRVQ(num_quantizers=7, latent_dim=latent_size_content_encoder, codebook_size=1024)
+        self.split_rvq = SplitRVQ(num_quantizers=7,
+                                  codebook_dim=8,
+                                  latent_dim=latent_size_content_encoder,
+                                  codebook_size=1024)
+            
         self.ce_projection = CrossEntropyProjection(channels=latent_size_content_encoder)
 
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
@@ -136,14 +140,14 @@ class VoiceModel(BaseModel):
 
         audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
-        z = self.encoder(audio_multiband_aug[:, :6, :])
-
-        z, vq_out, rvq_loss = self.split_rvq(z)
-        projected_z = self.ce_projection(vq_out)
         
-        #z = z.detach()
+        z = self.encoder(audio_multiband_aug[:, :6, :])
+        z, z_vq, commitment_loss = self.split_rvq(z)
+        projected_z = self.ce_projection(z_vq)
        
         speaker_emb = self.speaker_encoder(audio_multiband)
+        
+        z = torch.cat((z, speaker_emb.unsqueeze(-1).repeat(1, 1, z.shape[-1])), dim=1)
 
         y_multiband, nsf_source = self.decoder(z,
                                                speaker_emb,
@@ -159,7 +163,7 @@ class VoiceModel(BaseModel):
             "p_audio": audio_aug.unsqueeze(1),
             "x_multiband": audio_multiband,
             "y_multiband": y_multiband,
-            "rvq_loss": rvq_loss,
+            "commitment_loss": commitment_loss,
         }
 
     def get_val_audio(self, audio_data: torch.Tensor):
@@ -177,10 +181,10 @@ class VoiceModel(BaseModel):
         
         z = self.encoder(audio_multiband[:, :6, :]) 
         z = self.split_rvq(z)[0]
-        
-        #z = z.detach()
        
         speaker_emb = self.speaker_encoder(audio_multiband)
+        
+        z = torch.cat((z, speaker_emb.unsqueeze(-1).repeat(1, 1, z.shape[-1])), dim=1)
 
         y_multiband, nsf_source = self.decoder(z,
                                                speaker_emb,
@@ -235,6 +239,8 @@ class VoiceModel(BaseModel):
         source_pitch = (standardized_source_pitch * tar_std) + tar_med
         source_pitch = source_pitch * 1.0
         source_pitch[torch.isnan(source_pitch)] = 0
+
+        z = torch.cat((z, emb.unsqueeze(-1).repeat(1, 1, z.shape[-1])), dim=1)
 
         y_multiband, nsf_source = self.decoder(z,
                                                emb,
