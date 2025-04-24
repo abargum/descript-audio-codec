@@ -107,10 +107,7 @@ def build_dataset(
     duration: float = None,
     folders: dict = None,
 ):
-    # Give one loader per key/value of dictionary, where
-    # value is a list of folders. Create a dataset for each one.
-    # Concatenate the datasets with ConcatDataset, which
-    # cycles through them.
+
     datasets = []
     for _, v in folders.items():
         loader = AudioLoader(sources=v)
@@ -301,7 +298,6 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
-
         x_multiband = AudioSignal(rearrange(out["x_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
         y_multiband = AudioSignal(rearrange(out["y_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
 
@@ -309,8 +305,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         unit_loss = torch.nn.functional.cross_entropy(projected_z, target_units.type(torch.int64).to(recons.device))
         
         commitment_loss = out["commitment_loss"]
-        #codebook_loss = out["codebook_loss"]
-
+        
     if state.warmed_up:
         with accel.autocast():
             output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
@@ -332,7 +327,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         output["gen/waveform"] = state.waveform_loss(recons, signal)
         output["gen/unit"] = unit_loss
         output["gen/commitment"] = commitment_loss
-        #output["gen/codebook"] = codebook_loss
+        
         if state.warmed_up:
            (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
         output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
@@ -467,8 +462,7 @@ def train(
           "gen/mel": 12.0,
           "gen/multiband": 3.0,
           "gen/unit": 1.0,
-          "gen/commitment": 0.25,
-          "gen/codebook": 1.0,
+          "gen/commitment": 1.0,
           "adv/feat_loss": 2.0,
           "adv/gen_loss": 1.0,
     },
@@ -510,7 +504,6 @@ def train(
     validate = tracker.log("val", "mean")(validate)
 
     # These functions run only on the 0-rank process
-    
     save_samples = when(lambda: accel.local_rank == 0)(save_samples)
     checkpoint = when(lambda: accel.local_rank == 0)(checkpoint)
 
@@ -527,6 +520,7 @@ def train(
             if tracker.step % valid_freq == 0 or last_iter:
                 validate(state, val_dataloader, accel)
                 checkpoint(state, save_iters, save_path)
+                
                 # Reset validation progress bar, print summary since last validation.
                 tracker.done("val", f"Iteration {tracker.step}")
 
