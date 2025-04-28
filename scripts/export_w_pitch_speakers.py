@@ -150,6 +150,12 @@ class ScriptedRAVE(nn_tilde.Module):
     def reset_pitch(self):
         self.p_tracker.reset_buffer()
         self.p_tracker.reset_speaker(self.f0_mean)
+        self.latent_size = 320
+
+        if self.resampler is not None:
+            x = self.resampler.to_model_sampling_rate(x)
+
+        x_m = x.clone() if self.pqmf is None else self.pqmf(x)
 
 def main():
 
