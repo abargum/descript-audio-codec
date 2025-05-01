@@ -70,7 +70,7 @@ def extract_content_emb(speakers, encoder, pqmf, rvq):
             emb_audio = torch.cat([emb_audio, padding], dim=-1)
         audio_multiband = pqmf(emb_audio)
         z = encoder(audio_multiband[:, :6, :])
-        z = rvq(z)[0]
+        #z = rvq(z)[0]
         for i in range(z.shape[-1]):
             frame = z[:, :, i]
             embeddings.append(frame.detach().cpu().numpy())
@@ -145,7 +145,7 @@ def main():
     
     print("Processing content embeddings...")
     frames, labels = extract_content_emb(phrases, encoder, pqmf, rvq)
-    reduce_and_plot_tsne(frames, labels, name="plots/tsne_frames_rvq.png")
+    reduce_and_plot_tsne(frames, labels, name="plots/tsne_frames_rvq_z.png")
 
     """
     folder_path = "../vctk-small"

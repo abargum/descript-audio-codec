@@ -65,7 +65,7 @@ def extract_content_emb(files, encoder, pqmf, rvq):
             
             # Extract embeddings
             z = encoder(audio_multiband[:, :6, :])
-            z, vq_out, rvq_out, _ = rvq(z)
+            z, vq_out, rvq_out = rvq(z)
             
             # Get the mean embedding across time dimension
             emb = torch.mean(z, dim=2)
@@ -153,7 +153,7 @@ def main():
     
     # Get random files from speaker directories
     print(f"Getting random files from {args.speakers_dir}...")
-    all_files = get_random_files(args.speakers_dir, x=10)
+    all_files = get_random_files(args.speakers_dir, x=30)
     print(f"Total files selected: {len(all_files)}")
     
     if not all_files:
@@ -166,7 +166,7 @@ def main():
     print(f"Generated {len(embeddings)} embeddings with shape {embeddings.shape}")
     
     # Create t-SNE plot
-    plot_name = f"tsne_content_embeddings_{model_name}_rvq.png"
+    plot_name = f"tsne_content_embeddings_{model_name}_z.png"
     reduce_and_plot_tsne(embeddings, labels, plot_name)
 
 if __name__ == "__main__":
