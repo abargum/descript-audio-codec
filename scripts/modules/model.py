@@ -9,6 +9,7 @@ from audiotools.ml import BaseModel
 from .decoder import Generator
 from .encoder import SpeakerEncoder, Encoder
 from .pqmf import CachedPQMF as PQMF
+from .rvq import SplitRVQ
 
 from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
 from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_loudness, extract_rms
@@ -32,7 +33,7 @@ class VoiceModel(BaseModel):
         latent_size_content_encoder = 64,
         latent_size_pitch_encoder = 1440,
         capacity_content_encoder = 64,
-        capacity_pitch_encoder = 32,
+        capacity_pitch_encoder = 16,
         capacity_decoder = 96,
         n_out = 1,
         kernel_size = 3,
@@ -76,7 +77,7 @@ class VoiceModel(BaseModel):
                                             dilations = dilations
         )
 
-        self.pitch_encoder.load_state_dict(torch.load(f"scripts/utils/caus_pitch_enc.pth", weights_only=True))
+        self.pitch_encoder.load_state_dict(torch.load(f"scripts/utils/caus_pitch_enc_16.pth", weights_only=True))
         self.pitch_encoder.eval()
 
         self.speaker_encoder = SpeakerEncoder()
@@ -85,6 +86,11 @@ class VoiceModel(BaseModel):
         self.speaker_encoder.eval()
 
         self.ce_projection = CrossEntropyProjection(channels=latent_size_content_encoder)
+
+        self.split_rvq = SplitRVQ(num_quantizers=7,
+                                  codebook_dim=8,
+                                  latent_dim=latent_size_content_encoder,
+                                  codebook_size=1024)
 
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
@@ -131,20 +137,20 @@ class VoiceModel(BaseModel):
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)
         
-        #loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
         loudness = extract_loudness(audio_data, sr=self.sample_rate)
         loudness = (10 ** (loudness / 20))
 
         audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
+        
         z = self.encoder(audio_multiband_aug[:, :6, :])
-
-        projected_z = self.ce_projection(z)
+        z, z_vq, commitment_loss = self.split_rvq(z)
+        projected_z = self.ce_projection(z_vq)
        
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
 
-        z_cat = torch.cat((z.detach(), emb), dim=1)
+        z_cat = torch.cat((z, emb), dim=1)
 
         y_multiband, nsf_source = self.decoder(z_cat,
                                                f0.unsqueeze(1),
@@ -159,6 +165,7 @@ class VoiceModel(BaseModel):
             "p_audio": audio_aug.unsqueeze(1),
             "x_multiband": audio_multiband,
             "y_multiband": y_multiband,
+            "commitment_loss": commitment_loss,
         }
 
     def get_val_audio(self, audio_data: torch.Tensor):
@@ -172,16 +179,16 @@ class VoiceModel(BaseModel):
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)   
 
-        #loudness = extract_rms(audio_data, self.downsampling_rate, upsample=False)
         loudness = extract_loudness(audio_data, sr=self.sample_rate)
         loudness = (10 ** (loudness / 20))
         
         z = self.encoder(audio_multiband[:, :6, :])
+        z = self.split_rvq(z)[0]
        
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
 
-        z_cat = torch.cat((z.detach(), emb), dim=1)
+        z_cat = torch.cat((z, emb), dim=1)
 
         y_multiband, nsf_source = self.decoder(z_cat,
                                                f0.unsqueeze(1),
@@ -215,6 +222,7 @@ class VoiceModel(BaseModel):
         in_mean, in_std = extract_f0_mean_std(f0_in)
         
         z = self.encoder(audio_multiband[:, :6, :])
+        z = self.split_rvq(z)[0]
 
         emb = target_emb.unsqueeze(2).repeat(1, 1, z.shape[-1])
 

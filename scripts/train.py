@@ -184,7 +184,7 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection.parameters())
+        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection.parameters()) + list(generator.split_rvq.parameters())
         optimizer_g = AdamW(params_to_update, use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
         
@@ -305,6 +305,8 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
 
         unit_loss = torch.nn.functional.cross_entropy(projected_z, target_units.type(torch.int64).to(recons.device))
 
+        commitment_loss = out["commitment_loss"]
+
     if state.warmed_up:
         with accel.autocast():
             output["adv/disc_loss"] = state.gan_loss.discriminator_loss(recons, signal)
@@ -325,6 +327,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         output["gen/mel"] = state.mel_loss(recons, signal)
         output["gen/waveform"] = state.waveform_loss(recons, signal)
         output["gen/unit"] = unit_loss
+        output["gen/commitment"] = commitment_loss
         if state.warmed_up:
            (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
         output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
@@ -458,6 +461,7 @@ def train(
           "gen/mel": 12.0,
           "gen/multiband": 3.0,
           "gen/unit": 1.0,
+          "gen/commitment": 1.0,
           "adv/feat_loss": 2.0,
           "adv/gen_loss": 1.0,
     },
