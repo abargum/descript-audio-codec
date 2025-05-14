@@ -102,8 +102,8 @@ class Encoder(nn.Module):
         capacity: int,
         ratios: Sequence[int],
         latent_size: int,
-        n_out: int,
         kernel_size: int,
+        n_out: int,
         dilations: Sequence[int],
         keep_dim: bool = False,
         recurrent_layer: Optional[Callable[[], nn.Module]] = None,
@@ -113,6 +113,7 @@ class Encoder(nn.Module):
     ) -> None:
         super().__init__()
         dilations_list = normalize_dilations(dilations, ratios)
+        self.n_out = n_out
 
         if spectrogram is not None:
             self.spectrogram = spectrogram()
@@ -183,7 +184,11 @@ class Encoder(nn.Module):
             x = torch.log1p(x)
 
         x = self.net(x)
-        return x
+
+        if self.n_out > 1:
+            return torch.chunk(x, 2, dim=1)
+        else:
+            return x
 
 
 class SpeakerEncoder(nn.Module):
