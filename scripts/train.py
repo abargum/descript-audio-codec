@@ -33,7 +33,7 @@ from utils.custom_dataset import CustomAudioDataset
 ml.BaseModel.INTERN += ["modules.discriminator"]
 ml.BaseModel.EXTERN += ["einops"]
 
-file_path = 'metadata_w_wavlm.pkl'
+file_path = 'metadata_w_wavlm_full.pkl'
 with open(file_path, 'rb') as file:
     unit_dict = pickle.load(file)
 
