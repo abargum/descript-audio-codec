@@ -35,8 +35,7 @@ seed: 0
 lambdas:
   gen/mel: 12.0
   gen/multiband: 3.0
-  gen/unit_hubert: 1.0
-  gen/unit_wavlm: 1.0
+  gen/cos_loss: 15.0
   adv/feat_loss: 2.0
   adv/gen_loss: 1.0
 
@@ -67,15 +66,15 @@ MelSpectrogramLoss.mag_weight: 0.0
 # Data
 batch_size: 2 #overwritten in gpu yml
 
-train/AudioDataset.n_examples: 10000000
-train/build_dataset.duration: 1.486078
+train/AudioDataset.n_examples: 160742 #10000000
+train/build_dataset.duration: 1.486078 #2.972155 #0.3715193
 train/build_dataset.folders:
   music_hq:
-    - vctk-small
+    - VCTK-Corpus/wav48
 
 val/build_transform.augment_prob: 1.0
-val/AudioDataset.n_examples: 500
-val/build_dataset.duration: 1.486078
+val/AudioDataset.n_examples: 1000
+val/build_dataset.duration: 1.486078 #2.972155 #0.3715193
 val/build_dataset.folders:
   music_hq:
     - validation-set

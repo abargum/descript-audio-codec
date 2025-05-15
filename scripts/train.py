@@ -29,6 +29,21 @@ from einops import rearrange
 from torchaudio.functional import resample
 import pickle
 from utils.custom_dataset import CustomAudioDataset
+import torch.nn as nn
+import torch.nn.functional as F
+
+class CosinelLoss(nn.Module):
+    def __init__(self):
+        super(CosinelLoss, self).__init__()
+
+    def forward(self, x1, x2):
+
+        x1 = x1.transpose(2, 1)
+        x2 = x2.transpose(2, 1)
+        
+        n = min(x1.size(1), x2.size(1))
+        distill_loss = - torch.log(torch.sigmoid(F.cosine_similarity(x1[:, :n], x2[:, :n], axis=1))).mean()
+        return distill_loss
 
 ml.BaseModel.INTERN += ["modules.discriminator"]
 ml.BaseModel.EXTERN += ["einops"]
@@ -136,6 +151,7 @@ class State:
     mel_loss: losses.MelSpectrogramLoss
     gan_loss: losses.GANLoss
     waveform_loss: losses.L1Loss
+    cos_loss: CosinelLoss
 
     train_data: AudioDataset
     val_data: AudioDataset
@@ -184,7 +200,7 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection_hubert.parameters()) + list(generator.ce_projection_wavlm.parameters()) + list(generator.adapter.parameters())
+        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.wavlm_projection.parameters())
         optimizer_g = AdamW(params_to_update, use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
         
@@ -214,6 +230,7 @@ def load(
     stft_loss = losses.MultiScaleSTFTLoss()
     mel_loss = losses.MelSpectrogramLoss()
     gan_loss = losses.GANLoss(discriminator)
+    cos_loss = CosinelLoss()
 
     return State(
         generator=generator,
@@ -226,6 +243,7 @@ def load(
         stft_loss=stft_loss,
         mel_loss=mel_loss,
         gan_loss=gan_loss,
+        cos_loss=cos_loss,
         tracker=tracker,
         train_data=train_data,
         val_data=val_data,
@@ -272,6 +290,7 @@ def get_units(batch):
     unit_length = 74 #(t / sr * 16000) // 320
     target_units_hubert = torch.zeros(b, unit_length)
     target_units_wavlm = torch.zeros(b, unit_length)
+    target_output_wavlm = torch.zeros(b, 768, 64)
 
     for i, p in enumerate(batch["path"]):
         offset = batch["signal"].metadata["offset"][i]
@@ -279,14 +298,19 @@ def get_units(batch):
         
         unit_hubert = unit_dict[p]['hubert_units']
         unit_wavlm = unit_dict[p]['wavlm_units']
+        output_wavlm = unit_dict[p]['wavlm_output']
         
         unit_hubert = unit_hubert[start:start+unit_length].unsqueeze(0)
         unit_wavlm = unit_wavlm[start:start+unit_length].unsqueeze(0)
         
+        output_wavlm = output_wavlm[start:start+unit_length, :].unsqueeze(0)
+        output_wavlm = torch.nn.functional.avg_pool1d(output_wavlm.transpose(2,1), kernel_size=11, stride=1)
+        
         target_units_hubert[i, :] = unit_hubert
         target_units_wavlm[i, :] = unit_wavlm
+        target_output_wavlm[i, :] = output_wavlm
     
-    return target_units_hubert, target_units_wavlm
+    return target_units_hubert, target_units_wavlm, target_output_wavlm
 
 @timer()
 def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
@@ -300,20 +324,20 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
             batch["signal"].clone(), **batch["transform_args"]
         )
 
-        target_units_hubert, target_units_wavlm = get_units(batch)
+        target_units_hubert, target_units_wavlm, target_output_wavlm = get_units(batch)
 
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
         
-        projected_z_hubert = out["projected_z_hubert"]
         projected_z_wavlm = out["projected_z_wavlm"]
 
         x_multiband = AudioSignal(rearrange(out["x_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
         y_multiband = AudioSignal(rearrange(out["y_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
 
-        unit_loss_hubert = torch.nn.functional.cross_entropy(projected_z_hubert, target_units_hubert.type(torch.int64).to(recons.device))
-        unit_loss_wavlm = torch.nn.functional.cross_entropy(projected_z_wavlm, target_units_wavlm.type(torch.int64).to(recons.device))
+        print(projected_z_wavlm.shape, target_output_wavlm.shape)
+
+        loss_wavlm = state.cos_loss(projected_z_wavlm, target_output_wavlm.to(recons.device))
 
     if state.warmed_up:
         with accel.autocast():
@@ -334,8 +358,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         output["gen/stft"] = state.stft_loss(recons, signal)
         output["gen/mel"] = state.mel_loss(recons, signal)
         output["gen/waveform"] = state.waveform_loss(recons, signal)
-        output["gen/unit_hubert"] = unit_loss_hubert
-        output["gen/unit_wavlm"] = unit_loss_wavlm
+        output["gen/cos_loss"] = loss_wavlm
         if state.warmed_up:
            (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
         output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
@@ -468,8 +491,7 @@ def train(
     lambdas: dict = {
           "gen/mel": 12.0,
           "gen/multiband": 3.0,
-          "gen/unit_hubert": 1.0,
-          "gen/unit_wavlm": 1.0,
+          "gen/cos_loss": 1.0,
           "adv/feat_loss": 2.0,
           "adv/gen_loss": 1.0,
     },
