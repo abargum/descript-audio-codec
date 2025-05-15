@@ -184,7 +184,8 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection_hubert.parameters()) + list(generator.ce_projection_wavlm.parameters()) + list(generator.adapter.parameters())
+        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection_hubert.parameters())
+        
         optimizer_g = AdamW(params_to_update, use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
         
@@ -307,13 +308,11 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         recons = AudioSignal(out["audio"], signal.sample_rate)
         
         projected_z_hubert = out["projected_z_hubert"]
-        projected_z_wavlm = out["projected_z_wavlm"]
 
         x_multiband = AudioSignal(rearrange(out["x_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
         y_multiband = AudioSignal(rearrange(out["y_multiband"], "b c t -> (b c) t").squeeze(1), signal.sample_rate)
 
         unit_loss_hubert = torch.nn.functional.cross_entropy(projected_z_hubert, target_units_hubert.type(torch.int64).to(recons.device))
-        unit_loss_wavlm = torch.nn.functional.cross_entropy(projected_z_wavlm, target_units_wavlm.type(torch.int64).to(recons.device))
 
     if state.warmed_up:
         with accel.autocast():
@@ -335,7 +334,6 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         output["gen/mel"] = state.mel_loss(recons, signal)
         output["gen/waveform"] = state.waveform_loss(recons, signal)
         output["gen/unit_hubert"] = unit_loss_hubert
-        output["gen/unit_wavlm"] = unit_loss_wavlm
         if state.warmed_up:
            (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
         output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
@@ -469,7 +467,6 @@ def train(
           "gen/mel": 12.0,
           "gen/multiband": 3.0,
           "gen/unit_hubert": 1.0,
-          "gen/unit_wavlm": 1.0,
           "adv/feat_loss": 2.0,
           "adv/gen_loss": 1.0,
     },

@@ -120,13 +120,8 @@ class VoiceModel(BaseModel):
         spk_state, pqmf_state = self.load_speaker_statedict("scripts/utils/model000000075.model")
         self.speaker_encoder.load_state_dict(spk_state)
         self.speaker_encoder.eval()
-
-        self.adapter = TimeAxisAdapter(feature_dim=latent_size_content_encoder, hidden_dim=32)
-
-        #self.content_block = DiTBlock(hidden_size=latent_size_content_encoder, num_heads=2, causal=True)
         
         self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder)
-        self.ce_projection_wavlm = CrossEntropyProjectionWavLM(channels=latent_size_content_encoder)
 
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
@@ -179,12 +174,8 @@ class VoiceModel(BaseModel):
         audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
         
-        z1, z2 = self.encoder(audio_multiband_aug[:, :6, :])
-        z = self.adapter(z1, z2)
-        #z = self.content_block(z1.transpose(2,1), z2.transpose(2,1))
-
-        projected_z_hubert = self.ce_projection_hubert(z1)
-        projected_z_wavlm = self.ce_projection_wavlm(z2)
+        z = self.encoder(audio_multiband_aug[:, :6, :])
+        projected_z_hubert = self.ce_projection_hubert(z)
        
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
@@ -201,7 +192,6 @@ class VoiceModel(BaseModel):
         return {
             "audio": y[..., :length],
             "projected_z_hubert": projected_z_hubert,
-            "projected_z_wavlm": projected_z_wavlm,
             "p_audio": audio_aug.unsqueeze(1),
             "x_multiband": audio_multiband,
             "y_multiband": y_multiband,
@@ -221,9 +211,7 @@ class VoiceModel(BaseModel):
         loudness = extract_loudness(audio_data, sr=self.sample_rate)
         loudness = (10 ** (loudness / 20))
         
-        z1, z2 = self.encoder(audio_multiband[:, :6, :])
-        z = self.adapter(z1, z2)
-        #z = self.content_block(z1.transpose(2,1), z2.transpose(2,1))
+        z = self.encoder(audio_multiband[:, :6, :])
        
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
@@ -269,8 +257,7 @@ class VoiceModel(BaseModel):
         in_med, in_std = extract_f0_mean_std(f0_in)
         tar_med, tar_std = extract_f0_mean_std(f0_target)
                 
-        z1, z2 = self.encoder(audio_multiband[:, :6, :])
-        z = self.adapter(z1, z2)
+        z = self.encoder(audio_multiband[:, :6, :])
 
         with torch.no_grad():
             emb = self.speaker_encoder(target_multiband).unsqueeze(2)
