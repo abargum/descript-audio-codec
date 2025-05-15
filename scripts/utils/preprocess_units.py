@@ -27,7 +27,7 @@ def get_wavlm_units(audio):
     output = output.last_hidden_state.squeeze(0)
     units = kmean_unit_extractor.predict(output.squeeze().detach().cpu().numpy())
     units = torch.tensor(units, dtype=torch.long)
-    return units, output
+    return units, output.squeeze().detach().cpu()
 
 def get_hubert_units(audio):
     units = discrete_units.units(audio.unsqueeze(0))
@@ -58,6 +58,9 @@ def get_features(file_path, sr):
         last_val = wavlm_units[-1]
         wavlm_units = torch.cat([wavlm_units, last_val.repeat(diff)])
         
+        last_val = wavlm_output[-1:, :]  
+        wavlm_output = torch.cat([wavlm_output, last_val], dim=0)
+        
     return hubert_units, wavlm_units, wavlm_output
 
 def process_audio_directory(base_dirs, output_path, sample_rate):
@@ -86,7 +89,7 @@ def process_audio_directory(base_dirs, output_path, sample_rate):
                     print(f"Processing {file_path}...")
                     
                     try:
-                        hubert_units, wavlm_units, wavlm_output = get_features(file_path, sample_rate)                    
+                        hubert_units, wavlm_units, wavlm_output = get_features(file_path, sample_rate)
                         
                         audio_data[file_path] = {
                             'hubert_units': hubert_units,
@@ -110,6 +113,6 @@ base_directories = [
     "validation-set",
 ]
 sample_rate = 44100
-output_file = "metadata_w_wavlm.pkl"
+output_file = "metadata_w_wavlm_full.pkl"
 
 process_audio_directory(base_directories, output_file, sample_rate)
