@@ -32,7 +32,7 @@ from export_utils.pitchTracker import PitchRegisterTracker
 from utils.utils import load_dict_from_txt
 
 parser = argparse.ArgumentParser(description='Voice model processing script')
-parser.add_argument('--folder', type=str, default="pretrained/ablation/default", help='Path to the model folder')
+parser.add_argument('--model', type=str, help='Path to the model folder')
 parser.add_argument('--input_audio_folder', type=str, default="audio", help='Path to the input audio folder')
 parser.add_argument('--resampled_audio_folder', type=str, default="scripts/evaluation/resampled", help='Path to the resampled input audio folder')
 parser.add_argument('--processed_audio_folder', type=str, default="scripts/evaluation/processed",  help='Path to the processed audio folder')
@@ -139,7 +139,8 @@ def process_audio_files(generator, targets, embeddings, means, stds, input_folde
                 
                 audio_tensor = torch.tensor(y_adj).unsqueeze(0).unsqueeze(0).to(args.device)
                 with torch.no_grad():
-                    processed = generator.predict(audio_tensor, embeddings[i], means[i], stds[i])
+                    processed = generator.evaluate(audio_tensor, embeddings[i], means[i], stds[i])
+                    #processed = generator.get_val_audio(audio_tensor)["audio"]
                 
                 processed_np = processed.squeeze().cpu().numpy()
                 if sr != out_sr:
@@ -396,7 +397,7 @@ if __name__ == "__main__":
     generator = VoiceModel()
     
     kwargs = {
-        "folder": args.folder,
+        "folder": args.model,
         "map_location": args.device,
         "package": False
     }
@@ -405,7 +406,7 @@ if __name__ == "__main__":
     generator.to(args.device)
     generator.eval()
     
-    print(f"Model loaded from: {args.folder}")
+    print(f"Model loaded from: {args.model}")
 
     targets = ['p227', 'p228']
     speaker_embeddings, speaker_means, speaker_stds = get_speaker_embeddings(targets)
@@ -434,6 +435,4 @@ if __name__ == "__main__":
     print_similarity_report(similarity_results)
 
     # Calculate WER
-    #calculate_wer(targets, args.resampled_audio_folder, args.processed_audio_folder)
-    
-    
+    calculate_wer(targets, args.resampled_audio_folder, args.processed_audio_folder)
