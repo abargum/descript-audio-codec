@@ -193,6 +193,7 @@ class CausalMultiheadAttention(nn.Module):
         self.resid_dropout = nn.Dropout(dropout)
     
     def forward(self, x_q, x_k=None, x_v=None):
+
         """
         x_q: query tensor of shape (B, T_q, query_dim)
         x_k: key tensor of shape (B, T_kv, key_dim), defaults to x_q if None
@@ -218,12 +219,11 @@ class CausalMultiheadAttention(nn.Module):
         k = k.view(B, T_kv, self.num_heads, self.head_dim).transpose(1, 2)  # (B, nh, T_kv, hd)
         v = v.view(B, T_kv, self.num_heads, self.head_dim).transpose(1, 2)  # (B, nh, T_kv, hd)
         
-        is_causal = T_q == T_kv  # Only apply causal mask in self-attention case
         y = torch.nn.functional.scaled_dot_product_attention(
             q, k, v, 
             attn_mask=None, 
             dropout_p=self.dropout if self.training else 0, 
-            is_causal=is_causal
+            is_causal=True
         )
         
         y = y.transpose(1, 2).contiguous().view(B, T_q, self.embed_dim)

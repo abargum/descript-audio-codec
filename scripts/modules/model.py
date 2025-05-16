@@ -9,7 +9,7 @@ from audiotools.ml import BaseModel
 from .decoder import Generator
 from .encoder import SpeakerEncoder, Encoder
 from .pqmf import CachedPQMF as PQMF
-from .attention import DiTBlock
+from .attention import CausalMultiheadAttention
 
 from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
 from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_loudness, extract_rms
@@ -98,7 +98,7 @@ class VoiceModel(BaseModel):
         self.decoder = Generator(data_size = 16,
                                        capacity = capacity_decoder,
                                        ratios = ratios,
-                                       latent_size = latent_size_content_encoder + 256,
+                                       latent_size = (latent_size_content_encoder * 2) + 256,
                                        kernel_size = kernel_size,
                                        sampling_rate = sampling_rate,
                                        dilations = dilations
@@ -122,8 +122,11 @@ class VoiceModel(BaseModel):
         self.speaker_encoder.eval()
 
         self.adapter = TimeAxisAdapter(feature_dim=latent_size_content_encoder, hidden_dim=32)
-
-        #self.content_block = DiTBlock(hidden_size=latent_size_content_encoder, num_heads=2, causal=True)
+        self.timbre_time_varying = CausalMultiheadAttention(query_dim=latent_size_content_encoder,
+                                                            key_dim=1,
+                                                            value_dim=256,
+                                                            num_heads=8,
+                                                            dropout=0.0)
         
         self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder)
         self.ce_projection_wavlm = CrossEntropyProjectionWavLM(channels=latent_size_content_encoder)
@@ -189,7 +192,13 @@ class VoiceModel(BaseModel):
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
 
-        z_cat = torch.cat((z.detach(), emb), dim=1)
+        z = z.detach()
+
+        varying_speaker_emb = self.timbre_time_varying(z.transpose(2,1),
+                                                       f0.unsqueeze(1).transpose(2,1),
+                                                       emb.transpose(2,1))
+        
+        z_cat = torch.cat((z, emb, varying_speaker_emb), dim=1)
 
         y_multiband, nsf_source = self.decoder(z_cat,
                                                f0.unsqueeze(1),
@@ -223,12 +232,17 @@ class VoiceModel(BaseModel):
         
         z1, z2 = self.encoder(audio_multiband[:, :6, :])
         z = self.adapter(z1, z2)
-        #z = self.content_block(z1.transpose(2,1), z2.transpose(2,1))
        
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
 
-        z_cat = torch.cat((z.detach(), emb), dim=1)
+        z = z.detach()
+
+        varying_speaker_emb = self.timbre_time_varying(z.transpose(2,1),
+                                                       f0.unsqueeze(1).transpose(2,1),
+                                                       emb.transpose(2,1))
+
+        z_cat = torch.cat((z, emb, varying_speaker_emb), dim=1)
 
         y_multiband, nsf_source = self.decoder(z_cat,
                                                f0.unsqueeze(1),

@@ -71,7 +71,7 @@ train/AudioDataset.n_examples: 10000000
 train/build_dataset.duration: 1.486078
 train/build_dataset.folders:
   music_hq:
-    - vctk-small
+    - VCTK-Corpus/wav48
 
 val/build_transform.augment_prob: 1.0
 val/AudioDataset.n_examples: 500

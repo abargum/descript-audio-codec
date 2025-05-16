@@ -30,14 +30,20 @@ from torchaudio.functional import resample
 import pickle
 from utils.custom_dataset import CustomAudioDataset
 
+from torchaudio.functional import resample
+from transformers import EncodecModel, AutoProcessor
+
 ml.BaseModel.INTERN += ["modules.discriminator"]
 ml.BaseModel.EXTERN += ["einops"]
 
-file_path = 'metadata_w_wavlm_full.pkl'
+file_path = 'metadata_w_wavlm.pkl'
 with open(file_path, 'rb') as file:
     unit_dict = pickle.load(file)
 
 warnings.filterwarnings("ignore", category=UserWarning)
+
+encodec = EncodecModel.from_pretrained("facebook/encodec_24khz").to('cuda')
+encodec = encodec.eval()
 
 # Enable cudnn autotuner to speed up training
 # (can be altered by the funcs.seed function)
@@ -184,7 +190,8 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection_hubert.parameters()) + list(generator.ce_projection_wavlm.parameters()) + list(generator.adapter.parameters())
+        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection_hubert.parameters()) + list(generator.ce_projection_wavlm.parameters()) + list(generator.adapter.parameters()) + list(generator.timbre_time_varying.parameters())
+        
         optimizer_g = AdamW(params_to_update, use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
         
@@ -301,6 +308,15 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         )
 
         target_units_hubert, target_units_wavlm = get_units(batch)
+
+        with torch.no_grad():
+            audio_resampled = resample(signal.audio_data, 44100, 24000)
+            print(audio_resampled.shape)
+            encoded_frames = encodec.encode(audio_resampled)
+            codes = [frame.codes for frame in encoded_frames]
+            print(codes.shape)
+
+            print(acoustic_tokens.audio_codes.shape)
 
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
