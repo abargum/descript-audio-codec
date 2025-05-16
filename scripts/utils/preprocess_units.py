@@ -7,15 +7,21 @@ import torch.nn as nn
 from create_kmeans import kmeans
 from torchaudio.functional import resample
 from transformers import AutoProcessor, WavLMModel
+from transformers import Wav2Vec2FeatureExtractor, AutoModel, HubertConfig
 
-# Load HuBERT model
-discrete_units = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True).to(torch.device("cuda"))
-discrete_units.eval()
+# Load multi-speaker HuBERT model
+pretrained_path = "scripts/utils/kmeans_200_multi.pt"
+config = HubertConfig.from_pretrained("utter-project/mHuBERT-147", output_hidden_states=True)
+feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained("utter-project/mHuBERT-147")
+model_hubert = AutoModel.from_pretrained("utter-project/mHuBERT-147", config=config).to(torch.device("cuda"))
+model_hubert.eval()
+kmean_hubert = kmeans(pretrained=True, clusters=200, checkpoint=pretrained_path)
 
 # Load WavLM model with pre-trained kmeans
 pretrained_path = "scripts/utils/kmeans_512_wavlm.pt"
 num_clusters = 512
 model_wavlm = WavLMModel.from_pretrained("patrickvonplaten/wavlm-libri-clean-100h-base-plus").to(torch.device("cuda"))
+model_wavlm.eval()
 kmean_unit_extractor = kmeans(pretrained=True, clusters=num_clusters, checkpoint=pretrained_path)
 
 #model_name = "facebook/w2v-bert-2.0"  # Use the appropriate W2VBert model
@@ -30,7 +36,10 @@ def get_wavlm_units(audio):
     return units, output.squeeze().detach().cpu()
 
 def get_hubert_units(audio):
-    units = discrete_units.units(audio.unsqueeze(0))
+    output = model_hubert(audio)
+    output = output.hidden_states[6].squeeze(0)
+    units = kmean_hubert.predict(output.squeeze().detach().cpu().numpy())
+    units = torch.tensor(units, dtype=torch.long)
     return units.detach().cpu()
 
 def get_features(file_path, sr):

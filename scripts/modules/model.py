@@ -43,7 +43,7 @@ class CrossEntropyProjectionHuBERT(nn.Module):
     def __init__(self, channels):
         super().__init__()
         self.layer_norm = torch.nn.LayerNorm(channels)
-        self.proj = nn.Conv1d(channels, 100, 1, bias=False)
+        self.proj = nn.Conv1d(channels, 200, 1, bias=False)
         
     def forward(self, x):
         z_for_CE = self.layer_norm(x)
