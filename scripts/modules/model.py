@@ -344,11 +344,10 @@ class VoiceModel(BaseModel):
         source_pitch = (standardized_source_pitch * tar_std) + tar_mean
         source_pitch = source_pitch * 1.0
         source_pitch[torch.isnan(source_pitch)] = 0
-       
+        
         varying_speaker_emb = self.timbre_time_varying(z.transpose(2,1),
-                                                       source_pitch.unsqueeze(1).transpose(2,1),
+                                                       source_pitch.to(z).unsqueeze(1).transpose(2,1),
                                                        emb.transpose(2,1))
-
 
         z_cat = torch.cat((z, emb, varying_speaker_emb), dim=1)
 

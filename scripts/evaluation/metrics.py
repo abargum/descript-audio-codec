@@ -5,6 +5,8 @@ import IPython.display as ipd
 from scipy.io import wavfile 
 import sys
 import os
+import json
+import datetime
 from scipy.io import wavfile
 import argparse
 import pickle
@@ -22,6 +24,7 @@ from pathlib import Path
 import jiwer
 import shutil
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+from torchmetrics.audio.dnsmos import DeepNoiseSuppressionMeanOpinionScore
 
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, root_dir)
@@ -37,7 +40,6 @@ parser.add_argument('--input_audio_folder', type=str, default="audio", help='Pat
 parser.add_argument('--resampled_audio_folder', type=str, default="scripts/evaluation/resampled", help='Path to the resampled input audio folder')
 parser.add_argument('--processed_audio_folder', type=str, default="scripts/evaluation/processed",  help='Path to the processed audio folder')
 parser.add_argument('--target_speaker_folder', type=str, default="vctk-small",  help='Path to the target audio folder')
-parser.add_argument('--target_sr', type=int, default=44100, help='Saving sample rate for any metrics')
 parser.add_argument('--device', type=str, default="cuda", help='Device to run the model on (cuda or cpu)')
 parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
 
@@ -93,7 +95,7 @@ def get_speaker_embeddings(targets):
     
     return emb_list, f0_mean_list, f0_std_list
 
-def process_audio_files(generator, targets, embeddings, means, stds, input_folder, output_folder, processed_folder, out_sr=44100, min_power=14, mode="truncate"):
+def process_audio_files(generator, targets, embeddings, means, stds, input_folder, output_folder, processed_folder, min_power=14, mode="truncate"):
     """
     Process all audio files in input_folder (including subfolders) and save both original and processed 
     versions to their respective output folders while maintaining the same folder structure.
@@ -106,9 +108,12 @@ def process_audio_files(generator, targets, embeddings, means, stds, input_folde
         min_power (int): Minimum power of 2 for audio length adjustment
         mode (str): Mode for audio length adjustment ('truncate' or 'pad')
     """
+
+    processed_folder_44 = processed_folder + "_44"
     
     os.makedirs(output_folder, exist_ok=True)
     os.makedirs(processed_folder, exist_ok=True)
+    os.makedirs(processed_folder_44, exist_ok=True)
     
     # Get all audio files with .wav, .mp3, etc. extensions
     audio_files = []
@@ -124,30 +129,35 @@ def process_audio_files(generator, targets, embeddings, means, stds, input_folde
                 rel_path = os.path.relpath(audio_path, input_folder)                
                 output_audio_path = os.path.join(output_folder, target, rel_path)
                 processed_audio_path = os.path.join(processed_folder, target, rel_path)
+                processed_audio_path_44 = os.path.join(processed_folder_44, target, rel_path)
                 
                 os.makedirs(os.path.dirname(output_audio_path), exist_ok=True)
                 os.makedirs(os.path.dirname(processed_audio_path), exist_ok=True)
+                os.makedirs(os.path.dirname(processed_audio_path_44), exist_ok=True)
                 
                 y, sr = librosa.load(audio_path, sr=44100)
                 y_adj = adjust_audio_length(y, sr, min_power=min_power, mode=mode)
                 
-                if sr != out_sr:
-                    y = librosa.resample(y_adj.astype(np.float32), orig_sr=sr, target_sr=out_sr)
+                y = librosa.resample(y_adj.astype(np.float32), orig_sr=sr, target_sr=16000)
 
                 output_audio_path = output_audio_path.replace(".flac", ".wav")
-                wavfile.write(output_audio_path, out_sr, y)
+                wavfile.write(output_audio_path, 16000, y)
                 
                 audio_tensor = torch.tensor(y_adj).unsqueeze(0).unsqueeze(0).to(args.device)
+                
                 with torch.no_grad():
                     processed = generator.evaluate(audio_tensor, embeddings[i], means[i], stds[i])
                     #processed = generator.get_val_audio(audio_tensor)["audio"]
-                
-                processed_np = processed.squeeze().cpu().numpy()
-                if sr != out_sr:
-                    processed_np = librosa.resample(processed_np.astype(np.float32), orig_sr=sr, target_sr=out_sr)
 
+                # Processed 44.1 kHz
+                processed_np = processed.squeeze().cpu().numpy()
+                processed_audio_path_44 = processed_audio_path_44.replace(".flac", ".wav")
+                wavfile.write(processed_audio_path_44, 44100, processed_np.astype(np.float32))
+
+                # Processed 16000 kHz
+                processed_np = librosa.resample(processed_np.astype(np.float32), orig_sr=sr, target_sr=16000)
                 processed_audio_path = processed_audio_path.replace(".flac", ".wav")
-                wavfile.write(processed_audio_path, out_sr, processed_np.astype(np.float32))
+                wavfile.write(processed_audio_path, 16000, processed_np.astype(np.float32))
                 
                 print(f"Processed: {rel_path}")
             
@@ -263,6 +273,7 @@ def calculate_wer(targets, resampled_audio_folder, processed_audio_folder):
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
         model_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True, use_safetensors=True
     )
+    
     model.to(device)
     processor = AutoProcessor.from_pretrained(model_id)
     pipe = pipeline(
@@ -390,6 +401,206 @@ def calculate_wer(targets, resampled_audio_folder, processed_audio_folder):
     
     return all_speaker_results
 
+
+def calculate_dnsmos_scores(processed_folder_44, targets):
+    """
+    Calculate DNSMOS scores for all processed audio files in the 44kHz folder.
+    
+    Args:
+        processed_folder_44 (str): Path to the folder containing processed audio files at 44.1kHz
+        targets (list): List of target speaker IDs
+    
+    Returns:
+        dict: Dictionary with DNSMOS scores for each speaker
+    """
+    
+    results = {}
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Initialize DNSMOS model
+    dnsmos = DeepNoiseSuppressionMeanOpinionScore(fs=44100, personalized=False, device=device)
+    
+    for speaker in tqdm(targets, desc="Calculating DNSMOS scores"):
+        speaker_scores = {
+            'bak': [],
+            'sig': [],
+            'ovrl': []
+        }
+        
+        processed_speaker_path = os.path.join(processed_folder_44, speaker)
+        
+        if not os.path.exists(processed_speaker_path):
+            print(f"Warning: Processed folder for {speaker} not found at {processed_speaker_path}")
+            continue
+            
+        # Get all processed files for this speaker
+        processed_files = list(Path(processed_speaker_path).glob("**/*.wav"))
+        
+        if not processed_files:
+            print(f"Warning: No processed files found for {speaker}")
+            continue
+            
+        # Calculate DNSMOS for each processed file
+        for processed_file in tqdm(processed_files, desc=f"Processing {speaker} files", leave=False):
+            try:
+                # Load audio file
+                y, sr = librosa.load(str(processed_file), sr=44100)
+                
+                # Convert to tensor
+                audio_tensor = torch.tensor(y, device=device).float()
+                
+                # Calculate DNSMOS
+                scores = dnsmos(audio_tensor)
+                
+                # Extract scores
+                speaker_scores['sig'].append(scores[0].item())
+                speaker_scores['bak'].append(scores[1].item())
+                speaker_scores['ovrl'].append(scores[2].item())
+                
+            except Exception as e:
+                print(f"Error processing {processed_file}: {e}")
+        
+        # Calculate mean scores
+        results[speaker] = {
+            'mean_bak': np.mean(speaker_scores['bak']) if speaker_scores['bak'] else 0,
+            'mean_sig': np.mean(speaker_scores['sig']) if speaker_scores['sig'] else 0,
+            'mean_ovrl': np.mean(speaker_scores['ovrl']) if speaker_scores['ovrl'] else 0,
+            'individual_scores': speaker_scores
+        }
+    
+    return results
+
+def print_dnsmos_report(dnsmos_results):    
+    print("\n===== DNSMOS EVALUATION REPORT =====\n")
+    
+    # Calculate overall averages
+    all_bak = []
+    all_sig = []
+    all_ovrl = []
+    
+    # Print individual speaker results
+    for speaker, data in dnsmos_results.items():
+        print(f"\n== Speaker: {speaker} ==")
+        print(f"BAK (background quality): {data['mean_bak']:.4f}")
+        print(f"SIG (signal quality): {data['mean_sig']:.4f}")
+        print(f"OVRL (overall quality): {data['mean_ovrl']:.4f}")
+        
+        all_bak.append(data['mean_bak'])
+        all_sig.append(data['mean_sig'])
+        all_ovrl.append(data['mean_ovrl'])
+    
+    # Print overall averages
+    print("\n== Overall Average Scores ==")
+    print(f"Average BAK: {np.mean(all_bak):.4f}")
+    print(f"Average SIG: {np.mean(all_sig):.4f}")
+    print(f"Average OVRL: {np.mean(all_ovrl):.4f}")
+    
+    print("\n===========================================")
+
+def save_metrics_to_file(args, similarity_results, dnsmos_results, wer_results=None):
+    """
+    Save metrics to a text file in a metrics folder with the model name.
+    
+    Args:
+        args: The command line arguments
+        similarity_results: Results from calculate_similarity_scores
+        dnsmos_results: Results from calculate_dnsmos_scores
+        wer_results: Results from calculate_wer (optional)
+    """
+    # Extract model name from the model path
+    model_path = args.model.split('/')[-2]
+    model_name = os.path.basename(model_path)
+    
+    # Create metrics folder next to processed audio folder
+    base_dir = os.path.dirname(args.processed_audio_folder)
+    metrics_folder = os.path.join(base_dir, "metrics")
+    os.makedirs(metrics_folder, exist_ok=True)
+    
+    # Create metrics file path
+    metrics_file = os.path.join(metrics_folder, f"{model_name}.txt")
+    
+    # Current datetime
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Write metrics to file
+    with open(metrics_file, 'w') as f:
+        f.write(f"=== Voice Model Evaluation Metrics: {model_name} ===\n")
+        f.write(f"Evaluation date: {now}\n")
+        f.write(f"Model path: {model_path}\n\n")
+        
+        # Write similarity metrics
+        f.write("=== VOICE SIMILARITY METRICS ===\n")
+        for speaker, data in similarity_results.items():
+            if speaker != 'cross_speaker_similarity':
+                f.write(f"\nSpeaker: {speaker}\n")
+                f.write(f"Average similarity score: {data['average_similarity']:.4f}\n")
+                
+                # Add top 3 and bottom 3 files if there are enough samples
+                if len(data['individual_scores']) >= 6:
+                    f.write("\nTop 3 most similar files:\n")
+                    for i, (filename, score) in enumerate(data['individual_scores'][:3]):
+                        f.write(f"{i+1}. {filename}: {score:.4f}\n")
+                    
+                    f.write("\nBottom 3 least similar files:\n")
+                    for i, (filename, score) in enumerate(data['individual_scores'][-3:]):
+                        f.write(f"{i+1}. {filename}: {score:.4f}\n")
+        
+        # Calculate overall average similarity
+        avg_similarities = [data['average_similarity'] for speaker, data in similarity_results.items() 
+                           if speaker != 'cross_speaker_similarity']
+        if avg_similarities:
+            overall_avg = sum(avg_similarities) / len(avg_similarities)
+            f.write(f"\nOverall average similarity across all speakers: {overall_avg:.4f}\n")
+        
+        # Write DNSMOS metrics
+        f.write("\n\n=== DNSMOS METRICS ===\n")
+        all_bak = []
+        all_sig = []
+        all_ovrl = []
+        
+        for speaker, data in dnsmos_results.items():
+            f.write(f"\nSpeaker: {speaker}\n")
+            f.write(f"BAK (background quality): {data['mean_bak']:.4f}\n")
+            f.write(f"SIG (signal quality): {data['mean_sig']:.4f}\n")
+            f.write(f"OVRL (overall quality): {data['mean_ovrl']:.4f}\n")
+            
+            all_bak.append(data['mean_bak'])
+            all_sig.append(data['mean_sig'])
+            all_ovrl.append(data['mean_ovrl'])
+        
+        # Write overall DNSMOS averages
+        if all_bak and all_sig and all_ovrl:
+            f.write("\nOverall Average DNSMOS Scores:\n")
+            f.write(f"Average BAK: {sum(all_bak)/len(all_bak):.4f}\n")
+            f.write(f"Average SIG: {sum(all_sig)/len(all_sig):.4f}\n")
+            f.write(f"Average OVRL: {sum(all_ovrl)/len(all_ovrl):.4f}\n")
+        
+        # Write WER metrics if available
+        if wer_results:
+            f.write("\n\n=== WORD ERROR RATE (WER) METRICS ===\n")
+            
+            for speaker, data in wer_results.items():
+                f.write(f"\nSpeaker: {speaker}\n")
+                f.write(f"Mean WER: {data['mean_wer']:.4f}\n")
+                f.write(f"Min WER: {data['min_wer']:.4f}\n")
+                f.write(f"Max WER: {data['max_wer']:.4f}\n")
+                f.write(f"Files evaluated: {data['file_count']}\n")
+            
+            # Overall WER average
+            all_wers = [data['mean_wer'] for data in wer_results.values()]
+            if all_wers:
+                f.write(f"\nOverall Mean WER across all speakers: {sum(all_wers)/len(all_wers):.4f}\n")
+                
+                # Speaker ranking by WER
+                f.write("\nSpeaker Ranking (by Mean WER):\n")
+                for i, (speaker, data) in enumerate(sorted(wer_results.items(), key=lambda x: x[1]['mean_wer'])):
+                    f.write(f"{i+1}. {speaker}: {data['mean_wer']:.4f} (Files: {data['file_count']})\n")
+        
+        f.write("\n=== END OF METRICS REPORT ===\n")
+    
+    print(f"\nMetrics saved to: {metrics_file}")
+    return metrics_file
+
 if __name__ == "__main__":
     args = parser.parse_args()
     set_seed(args.seed)
@@ -411,8 +622,15 @@ if __name__ == "__main__":
     targets = ['p227', 'p228']
     speaker_embeddings, speaker_means, speaker_stds = get_speaker_embeddings(targets)
     
-    shutil.rmtree(args.resampled_audio_folder)
-    shutil.rmtree(args.processed_audio_folder)
+    processed_folder_44 = args.processed_audio_folder + "_44"
+    
+    # Check if folders exist, and only remove if they do
+    if os.path.exists(args.resampled_audio_folder):
+        shutil.rmtree(args.resampled_audio_folder)
+    if os.path.exists(args.processed_audio_folder):
+        shutil.rmtree(args.processed_audio_folder)
+    if os.path.exists(processed_folder_44):
+        shutil.rmtree(processed_folder_44)
 
     process_audio_files(generator,
                         targets,
@@ -421,8 +639,7 @@ if __name__ == "__main__":
                         speaker_stds,
                         args.input_audio_folder,
                         args.resampled_audio_folder,
-                        args.processed_audio_folder,
-                        args.target_sr)
+                        args.processed_audio_folder)
 
     # Calculate similarity scores
     print("\nCalculating similarity scores...")
@@ -432,7 +649,18 @@ if __name__ == "__main__":
         targets,
     )
 
-    print_similarity_report(similarity_results)
+    #print_similarity_report(similarity_results)
+    
+    # Calculate DNSMOS scores
+    print("\nCalculating DNSMOS scores...")
+    dnsmos_results = calculate_dnsmos_scores(
+        processed_folder_44,
+        targets,
+    )
+    
+    #print_dnsmos_report(dnsmos_results)
 
     # Calculate WER
-    calculate_wer(targets, args.resampled_audio_folder, args.processed_audio_folder)
+    wer_results = calculate_wer(targets, args.resampled_audio_folder, args.processed_audio_folder)
+
+    save_metrics_to_file(args=args, similarity_results=similarity_results, dnsmos_results=dnsmos_results, wer_results=wer_results)
