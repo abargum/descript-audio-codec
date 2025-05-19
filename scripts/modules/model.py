@@ -90,7 +90,7 @@ class VoiceModel(BaseModel):
                                  capacity = capacity_content_encoder,
                                  ratios = ratios,
                                  latent_size = latent_size_content_encoder,
-                                 n_out = 2,
+                                 n_out = 1,
                                  kernel_size = kernel_size,
                                  dilations = dilations
         )
@@ -280,3 +280,45 @@ class VoiceModel(BaseModel):
         y = self.pqmf.inverse(y_multiband)
         
         return y[..., :length]
+
+    def evaluate(self, audio_data: torch.Tensor, target_emb: torch.Tensor, tar_mean: float, tar_std: float, pitch_mode='mine'):
+
+        length = audio_data.shape[-1]
+
+        audio_multiband = self.pqmf(audio_data)
+
+        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])
+        periodicity = entropy(pitch_logits)
+
+        if pitch_mode == 'fcpe':
+            f0_in = get_f0_fcpe(audio_data.squeeze(1), self.sample_rate, 1024)
+            f0_in = f0_in[:, :, 0]
+        else:
+            f0_in = torch.argmax(pitch_logits, dim=1)
+            f0_in = bins_to_frequency(f0_in)
+
+        loudness = extract_loudness(audio_data, sr=self.sample_rate)
+        loudness = (10 ** (loudness / 20))
+        
+        in_mean, in_std = extract_f0_mean_std(f0_in)
+        
+        z = self.encoder(audio_multiband[:, :6, :])
+
+        emb = target_emb.unsqueeze(2).repeat(1, 1, z.shape[-1])
+
+        f0_in[f0_in == 0] = float('nan')
+        
+        standardized_source_pitch = (f0_in - in_mean.to(f0_in)) / in_std.to(f0_in)
+        source_pitch = (standardized_source_pitch * tar_std) + tar_mean
+        source_pitch = source_pitch * 1.0
+        source_pitch[torch.isnan(source_pitch)] = 0
+        z = torch.cat((z, emb.to(z)), dim=1)
+
+        y_multiband, nsf_source = self.decoder(z,
+                                               source_pitch.to(z),
+                                               periodicity.unsqueeze(1),
+                                               loudness.unsqueeze(1))
+
+        y = self.pqmf.inverse(y_multiband)
+        
+        return y
