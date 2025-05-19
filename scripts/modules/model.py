@@ -297,7 +297,11 @@ class VoiceModel(BaseModel):
         source_pitch = source_pitch * 1.0
         source_pitch[torch.isnan(source_pitch)] = 0
 
-        z_cat = torch.cat((z.detach(), emb), dim=1)
+        varying_speaker_emb = self.timbre_time_varying(z.transpose(2,1),
+                                                       f0.unsqueeze(1).transpose(2,1),
+                                                       emb.transpose(2,1))
+
+        z_cat = torch.cat((z, emb, varying_speaker_emb), dim=1)
 
         y_multiband, nsf_source = self.decoder(z_cat,
                                                source_pitch.unsqueeze(1),
@@ -332,7 +336,7 @@ class VoiceModel(BaseModel):
         z1, z2 = self.encoder(audio_multiband[:, :6, :])
         z = self.adapter(z1, z2)
 
-        emb = target_emb.unsqueeze(2).repeat(1, 1, z.shape[-1])
+        emb = target_emb.unsqueeze(2).repeat(1, 1, z.shape[-1]).to(z)
 
         f0_in[f0_in == 0] = float('nan')
         
@@ -340,9 +344,15 @@ class VoiceModel(BaseModel):
         source_pitch = (standardized_source_pitch * tar_std) + tar_mean
         source_pitch = source_pitch * 1.0
         source_pitch[torch.isnan(source_pitch)] = 0
-        z = torch.cat((z, emb.to(z)), dim=1)
+       
+        varying_speaker_emb = self.timbre_time_varying(z.transpose(2,1),
+                                                       source_pitch.unsqueeze(1).transpose(2,1),
+                                                       emb.transpose(2,1))
 
-        y_multiband, nsf_source = self.decoder(z,
+
+        z_cat = torch.cat((z, emb, varying_speaker_emb), dim=1)
+
+        y_multiband, nsf_source = self.decoder(z_cat,
                                                source_pitch.to(z),
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
