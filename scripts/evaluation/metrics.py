@@ -5,6 +5,8 @@ import IPython.display as ipd
 from scipy.io import wavfile 
 import sys
 import os
+import json
+import datetime
 from scipy.io import wavfile
 import argparse
 import pickle
@@ -495,6 +497,110 @@ def print_dnsmos_report(dnsmos_results):
     
     print("\n===========================================")
 
+def save_metrics_to_file(args, similarity_results, dnsmos_results, wer_results=None):
+    """
+    Save metrics to a text file in a metrics folder with the model name.
+    
+    Args:
+        args: The command line arguments
+        similarity_results: Results from calculate_similarity_scores
+        dnsmos_results: Results from calculate_dnsmos_scores
+        wer_results: Results from calculate_wer (optional)
+    """
+    # Extract model name from the model path
+    model_path = args.model.split('/')[-2]
+    model_name = os.path.basename(model_path)
+    
+    # Create metrics folder next to processed audio folder
+    base_dir = os.path.dirname(args.processed_audio_folder)
+    metrics_folder = os.path.join(base_dir, "metrics")
+    os.makedirs(metrics_folder, exist_ok=True)
+    
+    # Create metrics file path
+    metrics_file = os.path.join(metrics_folder, f"{model_name}.txt")
+    
+    # Current datetime
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Write metrics to file
+    with open(metrics_file, 'w') as f:
+        f.write(f"=== Voice Model Evaluation Metrics: {model_name} ===\n")
+        f.write(f"Evaluation date: {now}\n")
+        f.write(f"Model path: {model_path}\n\n")
+        
+        # Write similarity metrics
+        f.write("=== VOICE SIMILARITY METRICS ===\n")
+        for speaker, data in similarity_results.items():
+            if speaker != 'cross_speaker_similarity':
+                f.write(f"\nSpeaker: {speaker}\n")
+                f.write(f"Average similarity score: {data['average_similarity']:.4f}\n")
+                
+                # Add top 3 and bottom 3 files if there are enough samples
+                if len(data['individual_scores']) >= 6:
+                    f.write("\nTop 3 most similar files:\n")
+                    for i, (filename, score) in enumerate(data['individual_scores'][:3]):
+                        f.write(f"{i+1}. {filename}: {score:.4f}\n")
+                    
+                    f.write("\nBottom 3 least similar files:\n")
+                    for i, (filename, score) in enumerate(data['individual_scores'][-3:]):
+                        f.write(f"{i+1}. {filename}: {score:.4f}\n")
+        
+        # Calculate overall average similarity
+        avg_similarities = [data['average_similarity'] for speaker, data in similarity_results.items() 
+                           if speaker != 'cross_speaker_similarity']
+        if avg_similarities:
+            overall_avg = sum(avg_similarities) / len(avg_similarities)
+            f.write(f"\nOverall average similarity across all speakers: {overall_avg:.4f}\n")
+        
+        # Write DNSMOS metrics
+        f.write("\n\n=== DNSMOS METRICS ===\n")
+        all_bak = []
+        all_sig = []
+        all_ovrl = []
+        
+        for speaker, data in dnsmos_results.items():
+            f.write(f"\nSpeaker: {speaker}\n")
+            f.write(f"BAK (background quality): {data['mean_bak']:.4f}\n")
+            f.write(f"SIG (signal quality): {data['mean_sig']:.4f}\n")
+            f.write(f"OVRL (overall quality): {data['mean_ovrl']:.4f}\n")
+            
+            all_bak.append(data['mean_bak'])
+            all_sig.append(data['mean_sig'])
+            all_ovrl.append(data['mean_ovrl'])
+        
+        # Write overall DNSMOS averages
+        if all_bak and all_sig and all_ovrl:
+            f.write("\nOverall Average DNSMOS Scores:\n")
+            f.write(f"Average BAK: {sum(all_bak)/len(all_bak):.4f}\n")
+            f.write(f"Average SIG: {sum(all_sig)/len(all_sig):.4f}\n")
+            f.write(f"Average OVRL: {sum(all_ovrl)/len(all_ovrl):.4f}\n")
+        
+        # Write WER metrics if available
+        if wer_results:
+            f.write("\n\n=== WORD ERROR RATE (WER) METRICS ===\n")
+            
+            for speaker, data in wer_results.items():
+                f.write(f"\nSpeaker: {speaker}\n")
+                f.write(f"Mean WER: {data['mean_wer']:.4f}\n")
+                f.write(f"Min WER: {data['min_wer']:.4f}\n")
+                f.write(f"Max WER: {data['max_wer']:.4f}\n")
+                f.write(f"Files evaluated: {data['file_count']}\n")
+            
+            # Overall WER average
+            all_wers = [data['mean_wer'] for data in wer_results.values()]
+            if all_wers:
+                f.write(f"\nOverall Mean WER across all speakers: {sum(all_wers)/len(all_wers):.4f}\n")
+                
+                # Speaker ranking by WER
+                f.write("\nSpeaker Ranking (by Mean WER):\n")
+                for i, (speaker, data) in enumerate(sorted(wer_results.items(), key=lambda x: x[1]['mean_wer'])):
+                    f.write(f"{i+1}. {speaker}: {data['mean_wer']:.4f} (Files: {data['file_count']})\n")
+        
+        f.write("\n=== END OF METRICS REPORT ===\n")
+    
+    print(f"\nMetrics saved to: {metrics_file}")
+    return metrics_file
+
 if __name__ == "__main__":
     args = parser.parse_args()
     set_seed(args.seed)
@@ -543,7 +649,7 @@ if __name__ == "__main__":
         targets,
     )
 
-    print_similarity_report(similarity_results)
+    #print_similarity_report(similarity_results)
     
     # Calculate DNSMOS scores
     print("\nCalculating DNSMOS scores...")
@@ -552,7 +658,9 @@ if __name__ == "__main__":
         targets,
     )
     
-    print_dnsmos_report(dnsmos_results)
+    #print_dnsmos_report(dnsmos_results)
 
     # Calculate WER
-    calculate_wer(targets, args.resampled_audio_folder, args.processed_audio_folder)
+    wer_results = calculate_wer(targets, args.resampled_audio_folder, args.processed_audio_folder)
+
+    save_metrics_to_file(args=args, similarity_results=similarity_results, dnsmos_results=dnsmos_results, wer_results=wer_results)
