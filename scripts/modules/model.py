@@ -121,14 +121,14 @@ class VoiceModel(BaseModel):
         self.speaker_encoder.load_state_dict(spk_state)
         self.speaker_encoder.eval()
         
-        self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder)
+        self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder + 256)
 
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
         parametric_eq = SloppyPEQ(sample_rate=self.sample_rate, gain_range=[-15.0, 15.0])
 
-        transforms = {"peq": parametric_eq, "noise": add_noise}
-        probabilities = {"peq": 0.5, "noise": 0.5}
+        transforms = {"shift": shift_pitch, "peq": parametric_eq, "noise": add_noise}
+        probabilities = {"shift": 1.0, "peq": 0.75, "noise": 0.5}
 
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
 
@@ -175,10 +175,11 @@ class VoiceModel(BaseModel):
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
         
         z = self.encoder(audio_multiband_aug[:, :6, :])
-        projected_z_hubert = self.ce_projection_hubert(z)
        
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
+
+        projected_z_hubert = self.ce_projection_hubert(torch.cat((z, emb), dim=1))
 
         z_cat = torch.cat((z.detach(), emb), dim=1)
 
