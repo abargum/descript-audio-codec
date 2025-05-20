@@ -127,6 +127,8 @@ class VoiceModel(BaseModel):
                                                             value_dim=256,
                                                             num_heads=8,
                                                             dropout=0.0)
+
+        self.timbre_time_varying_projection = torch.nn.Linear(64, 3)
         
         self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder)
         self.ce_projection_wavlm = CrossEntropyProjectionWavLM(channels=latent_size_content_encoder)
@@ -197,6 +199,8 @@ class VoiceModel(BaseModel):
         varying_speaker_emb = self.timbre_time_varying(z.transpose(2,1),
                                                        f0.unsqueeze(1).transpose(2,1),
                                                        emb.transpose(2,1))
+
+        varying_speaker_emb_projected = self.timbre_time_varying_projection(varying_speaker_emb.transpose(2,1)).transpose(2,1)
         
         z_cat = torch.cat((z, emb, varying_speaker_emb), dim=1)
 
@@ -209,6 +213,7 @@ class VoiceModel(BaseModel):
         
         return {
             "audio": y[..., :length],
+            "varying_speaker_emb": varying_speaker_emb_projected,
             "projected_z_hubert": projected_z_hubert,
             "projected_z_wavlm": projected_z_wavlm,
             "p_audio": audio_aug.unsqueeze(1),

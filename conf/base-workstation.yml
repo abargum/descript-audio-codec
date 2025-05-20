@@ -37,6 +37,7 @@ lambdas:
   gen/multiband: 3.0
   gen/unit_hubert: 1.0
   gen/unit_wavlm: 1.0
+  gen/acoustic: 10.0
   adv/feat_loss: 2.0
   adv/gen_loss: 1.0
 
