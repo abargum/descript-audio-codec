@@ -230,3 +230,92 @@ class CausalMultiheadAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         
         return y.transpose(2, 1)
+
+class CausalMultiheadAttention2(nn.Module):
+    """Causal Multi-head scaled dot-product attention.
+    """
+    def __init__(self,
+                 keys: int,
+                 values: int,
+                 queries: int,
+                 out_channels: int,
+                 hiddens: int,
+                 heads: int,
+                 dropout: float = 0.0):
+        """Initializer.
+        Args:
+            keys, values, queries: size of the input channels.
+            out_channels: size of the output channels.
+            hiddens: size of the hidden channels.
+            heads: the number of the attention heads.
+            dropout: dropout probability.
+        """
+        super().__init__()
+        assert hiddens % heads == 0, \
+            f'size of hiddens channels(={hiddens}) should be factorized by heads(={heads})'
+        self.channels, self.heads = hiddens // heads, heads
+        self.proj_key = nn.Conv1d(keys, hiddens, 1)
+        self.proj_value = nn.Conv1d(values, hiddens, 1)
+        self.proj_query = nn.Conv1d(queries, hiddens, 1)
+        self.proj_out = nn.Conv1d(hiddens, out_channels, 1)
+        
+        # Adding dropout for regularization
+        self.attn_dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout)
+        
+    def forward(self,
+                keys: torch.Tensor,
+                values: torch.Tensor,
+                queries: torch.Tensor,
+                mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Transform the inputs with causal attention.
+        Args:
+            keys: [torch.float32; [B, keys, S]], attention key.
+            values: [torch.float32; [B, values, S]], attention value.
+            queries: [torch.float32; [B, queries, T]], attention query.
+            mask: [torch.float32; [B, S, T]], attention mask, 0 for paddings.
+        Returns:
+            [torch.float32; [B, out_channels, T]], transformed outputs.
+        """
+        # B, T
+        bsize, _, querylen = queries.shape
+        # S
+        keylen = keys.shape[-1]
+        assert keylen == values.shape[-1], 'lengths of key and value are not matched'
+        
+        # [B, H, hiddens // H, S]
+        keys = self.proj_key(keys).view(bsize, self.heads, -1, keylen)
+        values = self.proj_value(values).view(bsize, self.heads, -1, keylen)
+        
+        # [B, H, hiddens // H, T]
+        queries = self.proj_query(queries).view(bsize, self.heads, -1, querylen)
+        
+        # [B, H, S, T]
+        score = torch.matmul(keys.transpose(2, 3), queries) * (self.channels ** -0.5)
+        
+        # Apply causal mask - ensure each position can only attend to previous positions
+        # Create a causal mask that prevents attending to future tokens
+        if keylen == querylen:  # Self-attention case
+            causal_mask = torch.triu(
+                torch.ones(keylen, querylen, device=queries.device), diagonal=1
+            ).bool()
+            score.masked_fill_(causal_mask[None, None, :, :], -np.inf)
+        
+        # Apply padding mask if provided
+        if mask is not None:
+            score.masked_fill_(~mask[:, None, :, :].to(torch.bool), -np.inf)
+            
+        # [B, H, S, T]
+        weights = torch.softmax(score, dim=2)
+        weights = self.attn_dropout(weights)
+        
+        # [B, hiddens, T]
+        out = torch.matmul(values, weights).view(bsize, -1, querylen)
+        
+        # Output projection with dropout
+        out = self.resid_dropout(self.proj_out(out))
+        
+        if mask is not None:
+            out = out * mask[:, :1]
+            
+        return out
