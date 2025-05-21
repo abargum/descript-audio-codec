@@ -42,7 +42,7 @@ class TimeAxisAdapter(nn.Module):
 class CrossEntropyProjectionHuBERT(nn.Module):
     def __init__(self, channels):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(channels)
+        self.layer_norm = torch.nn.LayerNorm(64)
         self.proj = nn.Conv1d(channels, 100, 1, bias=False)
         
     def forward(self, x):
@@ -54,7 +54,7 @@ class CrossEntropyProjectionHuBERT(nn.Module):
 class CrossEntropyProjectionWavLM(nn.Module):
     def __init__(self, channels):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(channels)
+        self.layer_norm = torch.nn.LayerNorm(64)
         self.proj = nn.Conv1d(channels, 512, 1, bias=False)
         
     def forward(self, x):
