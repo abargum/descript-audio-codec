@@ -9,40 +9,15 @@ from audiotools.ml import BaseModel
 from .decoder import Generator
 from .encoder import SpeakerEncoder, Encoder
 from .pqmf import CachedPQMF as PQMF
-from .attention import DiTBlock
+from .attention import CausalMultiheadAttention2
 
 from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
 from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_loudness, extract_rms
 
-class TimeAxisAdapter(nn.Module):
-    def __init__(self, feature_dim=64, hidden_dim=32):
-        super().__init__()
-        
-        self.attention_net = nn.Sequential(
-            nn.Linear(feature_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
-            nn.Sigmoid()
-        )
-        
-    def forward(self, x1, x2):
-        assert x1.shape == x2.shape, f"Input shapes must match: {x1.shape} vs {x2.shape}"
-        B, F, T = x1.shape
-        
-        x1_t = x1.transpose(1, 2)
-        x2_t = x2.transpose(1, 2) 
-        
-        concat_features = torch.cat([x1_t, x2_t], dim=2)
-        weights = self.attention_net(concat_features)
-        
-        output = weights * x1_t + (1 - weights) * x2_t
-        output = output.transpose(1, 2)
-        return output
-
 class CrossEntropyProjectionHuBERT(nn.Module):
     def __init__(self, channels):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(channels)
+        self.layer_norm = torch.nn.LayerNorm(64)
         self.proj = nn.Conv1d(channels, 100, 1, bias=False)
         
     def forward(self, x):
@@ -54,7 +29,7 @@ class CrossEntropyProjectionHuBERT(nn.Module):
 class CrossEntropyProjectionWavLM(nn.Module):
     def __init__(self, channels):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(channels)
+        self.layer_norm = torch.nn.LayerNorm(64)
         self.proj = nn.Conv1d(channels, 512, 1, bias=False)
         
     def forward(self, x):
@@ -121,19 +96,17 @@ class VoiceModel(BaseModel):
         self.speaker_encoder.load_state_dict(spk_state)
         self.speaker_encoder.eval()
 
-        self.adapter = TimeAxisAdapter(feature_dim=latent_size_content_encoder, hidden_dim=32)
-
-        #self.content_block = DiTBlock(hidden_size=latent_size_content_encoder, num_heads=2, causal=True)
+        self.adapter = CausalMultiheadAttention2(keys=64, values=64, queries=64, out_channels=64, hiddens=768, heads=8)
         
-        self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder)
-        self.ce_projection_wavlm = CrossEntropyProjectionWavLM(channels=latent_size_content_encoder)
+        self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder + 256)
+        self.ce_projection_wavlm = CrossEntropyProjectionWavLM(channels=latent_size_content_encoder + 256)
 
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
         parametric_eq = SloppyPEQ(sample_rate=self.sample_rate, gain_range=[-15.0, 15.0])
 
-        transforms = {"peq": parametric_eq, "noise": add_noise}
-        probabilities = {"peq": 0.5, "noise": 0.5}
+        transforms = {"shift": shift_pitch, "peq": parametric_eq, "noise": add_noise}
+        probabilities = {"shift": 1.0, "peq": 0.75, "noise": 0.5}
 
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
 
@@ -180,16 +153,19 @@ class VoiceModel(BaseModel):
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
         
         z1, z2 = self.encoder(audio_multiband_aug[:, :6, :])
-        z = self.adapter(z1, z2)
-        #z = self.content_block(z1.transpose(2,1), z2.transpose(2,1))
 
-        projected_z_hubert = self.ce_projection_hubert(z1)
-        projected_z_wavlm = self.ce_projection_wavlm(z2)
-       
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z.shape[-1])
+        emb = emb.repeat(1, 1, z1.shape[-1])
 
-        z_cat = torch.cat((z.detach(), emb), dim=1)
+        projected_z_hubert = self.ce_projection_hubert(torch.cat((z1, emb), dim=1))
+        projected_z_wavlm = self.ce_projection_wavlm(torch.cat((z2, emb), dim=1))
+        
+        z1 = z1.detach()
+        z2 = z2.detach()
+
+        z = self.adapter(z2, z2, z1)
+
+        z_cat = torch.cat((z, emb), dim=1)
 
         y_multiband, nsf_source = self.decoder(z_cat,
                                                f0.unsqueeze(1),
@@ -222,13 +198,12 @@ class VoiceModel(BaseModel):
         loudness = (10 ** (loudness / 20))
         
         z1, z2 = self.encoder(audio_multiband[:, :6, :])
-        z = self.adapter(z1, z2)
-        #z = self.content_block(z1.transpose(2,1), z2.transpose(2,1))
-       
-        emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z.shape[-1])
+        z = self.adapter(z2, z2, z1)
 
-        z_cat = torch.cat((z.detach(), emb), dim=1)
+        emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
+        emb = emb.repeat(1, 1, z1.shape[-1])
+
+        z_cat = torch.cat((z, emb), dim=1)
 
         y_multiband, nsf_source = self.decoder(z_cat,
                                                f0.unsqueeze(1),
@@ -270,7 +245,7 @@ class VoiceModel(BaseModel):
         tar_med, tar_std = extract_f0_mean_std(f0_target)
                 
         z1, z2 = self.encoder(audio_multiband[:, :6, :])
-        z = self.adapter(z1, z2)
+        z = self.adapter(z2, z2, z1)
 
         with torch.no_grad():
             emb = self.speaker_encoder(target_multiband).unsqueeze(2)
