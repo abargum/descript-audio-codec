@@ -95,7 +95,7 @@ def get_speaker_embeddings(targets):
     
     return emb_list, f0_mean_list, f0_std_list
 
-def process_audio_files(generator, targets, embeddings, means, stds, input_folder, output_folder, processed_folder, min_power=14, mode="truncate"):
+def process_audio_files(generator, targets, embeddings, means, stds, input_folder, output_folder, processed_folder, min_power=14, mode="pad"):
     """
     Process all audio files in input_folder (including subfolders) and save both original and processed 
     versions to their respective output folders while maintaining the same folder structure.
@@ -648,6 +648,8 @@ if __name__ == "__main__":
         args.target_speaker_folder,
         targets,
     )
+
+    #print_similarity_report(similarity_results)
     
     # Calculate DNSMOS scores
     print("\nCalculating DNSMOS scores...")
@@ -656,6 +658,8 @@ if __name__ == "__main__":
         targets,
     )
     
+    #print_dnsmos_report(dnsmos_results)
+
     # Calculate WER
     wer_results = calculate_wer(targets, args.resampled_audio_folder, args.processed_audio_folder)
 
