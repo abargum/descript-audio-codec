@@ -1,0 +1,74 @@
+=== Voice Model Evaluation Metrics: simple ===
+Evaluation date: 2025-05-22 11:18:13
+Model path: simple
+
+=== VOICE SIMILARITY METRICS ===
+
+Speaker: p227
+Average similarity score: 0.8538
+
+Top 3 most similar files:
+1. p241_018.wav: 0.9201
+2. p241_081.wav: 0.9130
+3. p243_190.wav: 0.9078
+
+Bottom 3 least similar files:
+1. p238_242.wav: 0.7992
+2. p243_328.wav: 0.7849
+3. p237_109.wav: 0.6955
+
+Speaker: p228
+Average similarity score: 0.8489
+
+Top 3 most similar files:
+1. p241_018.wav: 0.9141
+2. p236_403.wav: 0.9009
+3. p243_190.wav: 0.8978
+
+Bottom 3 least similar files:
+1. p241_084.wav: 0.7896
+2. p239_213.wav: 0.7803
+3. p237_109.wav: 0.7021
+
+Overall average similarity across all speakers: 0.8513
+
+
+=== DNSMOS METRICS ===
+
+Speaker: p227
+BAK (background quality): 3.4465
+SIG (signal quality): 3.5977
+OVRL (overall quality): 3.9854
+
+Speaker: p228
+BAK (background quality): 3.3077
+SIG (signal quality): 3.3848
+OVRL (overall quality): 3.8481
+
+Overall Average DNSMOS Scores:
+Average BAK: 3.3771
+Average SIG: 3.4912
+Average OVRL: 3.9168
+
+
+=== WORD ERROR RATE (WER) METRICS ===
+
+Speaker: p227
+Mean WER: 0.1102
+Min WER: 0.0000
+Max WER: 0.8000
+Files evaluated: 31
+
+Speaker: p228
+Mean WER: 0.0860
+Min WER: 0.0000
+Max WER: 0.8000
+Files evaluated: 31
+
+Overall Mean WER across all speakers: 0.0981
+
+Speaker Ranking (by Mean WER):
+1. p228: 0.0860 (Files: 31)
+2. p227: 0.1102 (Files: 31)
+
+=== END OF METRICS REPORT ===

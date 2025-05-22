@@ -1,0 +1,54 @@
+=== Voice Model Evaluation Metrics: double ===
+Evaluation date: 2025-05-22 13:42:10
+Model path: double
+
+=== VOICE SIMILARITY METRICS ===
+
+Speaker: p227
+Average similarity score: 0.8567
+
+Speaker: p228
+Average similarity score: 0.8853
+
+Overall average similarity across all speakers: 0.8710
+
+
+=== DNSMOS METRICS ===
+
+Speaker: p227
+BAK (background quality): 3.3013
+SIG (signal quality): 3.6172
+OVRL (overall quality): 3.8322
+
+Speaker: p228
+BAK (background quality): 3.3288
+SIG (signal quality): 3.5810
+OVRL (overall quality): 3.7690
+
+Overall Average DNSMOS Scores:
+Average BAK: 3.3151
+Average SIG: 3.5991
+Average OVRL: 3.8006
+
+
+=== WORD ERROR RATE (WER) METRICS ===
+
+Speaker: p227
+Mean WER: 0.1167
+Min WER: 0.0000
+Max WER: 0.2333
+Files evaluated: 2
+
+Speaker: p228
+Mean WER: 0.1500
+Min WER: 0.0000
+Max WER: 0.3000
+Files evaluated: 2
+
+Overall Mean WER across all speakers: 0.1333
+
+Speaker Ranking (by Mean WER):
+1. p227: 0.1167 (Files: 2)
+2. p228: 0.1500 (Files: 2)
+
+=== END OF METRICS REPORT ===
