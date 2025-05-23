@@ -96,6 +96,7 @@ def process_single_audio_file(audio_path, target, embeddings, means, stds,
         
         # Load and process audio
         y, sr = librosa.load(audio_path, sr=44100)
+        y = librosa.util.normalize(y, axis=-1)
         
         # Check if audio is too short or empty
         if len(y) == 0:
