@@ -291,7 +291,7 @@ class VoiceModel(BaseModel):
         in_mean, in_std = extract_f0_mean_std(f0_in)
         
         z1, z2 = self.encoder(audio_multiband[:, :6, :])
-        z = self.adapter(z1, z2)
+        z = self.adapter(z2, z2, z1)
 
         emb = target_emb.unsqueeze(2).repeat(1, 1, z.shape[-1])
 
