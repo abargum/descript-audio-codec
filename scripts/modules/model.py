@@ -190,7 +190,7 @@ class VoiceModel(BaseModel):
         length = audio_data.shape[-1]
 
         audio_multiband = self.pqmf(audio_data)
-        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])
+        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])[0]
         
         f0 = torch.argmax(pitch_logits, dim=1)
         f0 = bins_to_frequency(f0)
@@ -202,7 +202,8 @@ class VoiceModel(BaseModel):
         audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
         
-        z1, z2 = self.encoder(audio_multiband_aug[:, :6, :])
+        outputs = self.encoder(audio_multiband_aug[:, :6, :])
+        z1, z2 = outputs[0], outputs[1]
         z = self.adapter(z1, z2)
 
         projected_z_hubert = self.ce_projection_hubert(z1)
@@ -213,7 +214,7 @@ class VoiceModel(BaseModel):
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
 
-        timbre_embedding = self.timbre_encoder(audio_multiband_aug[:, :6, :])
+        timbre_embedding = self.timbre_encoder(audio_multiband_aug[:, :6, :])[0]
         timbre_tokens = self.timbre_tokenizer(timbre_embedding,
                                               timbre_embedding,
                                               self.latent_query.repeat(timbre_embedding.shape[0], 1, 1))
@@ -249,7 +250,7 @@ class VoiceModel(BaseModel):
         
         audio_multiband = self.pqmf(audio_data)
         
-        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])
+        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])[0]
         f0 = torch.argmax(pitch_logits, dim=1)
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)   
@@ -257,7 +258,8 @@ class VoiceModel(BaseModel):
         loudness = extract_loudness(audio_data, sr=self.sample_rate)
         loudness = (10 ** (loudness / 20))
         
-        z1, z2 = self.encoder(audio_multiband[:, :6, :])
+        outputs = self.encoder(audio_multiband[:, :6, :])
+        z1, z2 = outputs[0], outputs[1]
         z = self.adapter(z1, z2)
        
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
@@ -265,7 +267,7 @@ class VoiceModel(BaseModel):
 
         z = z.detach()
 
-        timbre_embedding = self.timbre_encoder(audio_multiband[:, :6, :])
+        timbre_embedding = self.timbre_encoder(audio_multiband[:, :6, :])[0]
         timbre_tokens = self.timbre_tokenizer(timbre_embedding,
                                               timbre_embedding,
                                               self.latent_query.repeat(timbre_embedding.shape[0], 1, 1))
@@ -295,7 +297,7 @@ class VoiceModel(BaseModel):
         audio_multiband = self.pqmf(audio_data)
         target_multiband = self.pqmf(target)
 
-        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])
+        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])[0]
         periodicity = entropy(pitch_logits)
 
         if pitch_mode == 'fcpe':
@@ -306,7 +308,7 @@ class VoiceModel(BaseModel):
         else:
             f0_in = torch.argmax(pitch_logits, dim=1)
             f0_in = bins_to_frequency(f0_in)
-            pitch_logits = self.pitch_encoder(target_multiband[:, :6, :])
+            pitch_logits = self.pitch_encoder(target_multiband[:, :6, :])[0]
             f0_target = torch.argmax(pitch_logits, dim=1)
             f0_target = bins_to_frequency(f0_target)
 
@@ -316,8 +318,9 @@ class VoiceModel(BaseModel):
         
         in_med, in_std = extract_f0_mean_std(f0_in)
         tar_med, tar_std = extract_f0_mean_std(f0_target)
-                
-        z1, z2 = self.encoder(audio_multiband[:, :6, :])
+            
+        outputs = self.encoder(audio_multiband[:, :6, :])
+        z1, z2 = outputs[0], outputs[1]
         z = self.adapter(z1, z2)
 
         with torch.no_grad():
@@ -332,7 +335,7 @@ class VoiceModel(BaseModel):
         source_pitch[torch.isnan(source_pitch)] = 0
 
         
-        timbre_embedding = self.timbre_encoder(target_multiband[:, :6, :])
+        timbre_embedding = self.timbre_encoder(audio_multiband[:, :6, :])[0]
         timbre_tokens = self.timbre_tokenizer(timbre_embedding,
                                               timbre_embedding,
                                               self.latent_query.repeat(timbre_embedding.shape[0], 1, 1))
@@ -360,7 +363,7 @@ class VoiceModel(BaseModel):
 
         audio_multiband = self.pqmf(audio_data)
 
-        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])
+        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])[0]
         periodicity = entropy(pitch_logits)
 
         if pitch_mode == 'fcpe':
@@ -375,7 +378,8 @@ class VoiceModel(BaseModel):
         
         in_mean, in_std = extract_f0_mean_std(f0_in)
         
-        z1, z2 = self.encoder(audio_multiband[:, :6, :])
+        outputs = self.encoder(audio_multiband[:, :6, :])
+        z1, z2 = outputs[0], outputs[1]
         z = self.adapter(z1, z2)
 
         emb = target_emb.unsqueeze(2).repeat(1, 1, z.shape[-1]).to(z)
@@ -387,14 +391,21 @@ class VoiceModel(BaseModel):
         source_pitch = source_pitch * 1.0
         source_pitch[torch.isnan(source_pitch)] = 0
         
-        varying_speaker_emb = self.timbre_time_varying(z.transpose(2,1),
-                                                       source_pitch.to(z).unsqueeze(1).transpose(2,1),
-                                                       emb.transpose(2,1))
+        timbre_embedding = self.timbre_encoder(audio_multiband[:, :6, :])[0]
+        timbre_tokens = self.timbre_tokenizer(timbre_embedding,
+                                              timbre_embedding,
+                                              self.latent_query.repeat(timbre_embedding.shape[0], 1, 1))
+
+        timbre_queries = torch.cat((z, source_pitch.unsqueeze(1), periodicity.unsqueeze(1), loudness.unsqueeze(1), emb), dim=1)
+
+        varying_speaker_emb = self.timbre_embedding(self.timbre_keys.repeat(timbre_embedding.shape[0], 1, 1),
+                                                    timbre_tokens,
+                                                    timbre_queries)
 
         z_cat = torch.cat((z, emb, varying_speaker_emb), dim=1)
 
         y_multiband, nsf_source = self.decoder(z_cat,
-                                               source_pitch.to(z),
+                                               source_pitch.unsqueeze(1),
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
 

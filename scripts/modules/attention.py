@@ -297,13 +297,13 @@ class CausalMultiheadAttention2(nn.Module):
         # Create a causal mask that prevents attending to future tokens
         if keylen == querylen:  # Self-attention case
             causal_mask = torch.triu(
-                torch.ones(keylen, querylen, device=queries.device), diagonal=1
-            ).bool()
-            score.masked_fill_(causal_mask[None, None, :, :], -np.inf)
+                torch.ones(keylen, querylen, device=queries.device, dtype=torch.bool), diagonal=1
+            )
+            score.masked_fill_(causal_mask[None, None, :, :], -torch.inf)
         
         # Apply padding mask if provided
         if mask is not None:
-            score.masked_fill_(~mask[:, None, :, :].to(torch.bool), -np.inf)
+            score.masked_fill_(~mask[:, None, :, :].to(torch.bool), -torch.inf)
             
         # [B, H, S, T]
         weights = torch.softmax(score, dim=2)

@@ -97,9 +97,6 @@ def process_single_audio_file(audio_path, target, embeddings, means, stds,
         # Load and process audio
         y, sr = librosa.load(audio_path, sr=44100)
         y = librosa.util.normalize(y, axis=-1)
-
-        target, sr = librosa.load("vctk-small/p228/p228_004.wav", sr=44100)
-        target = torch.tensor(target[:131072]).unsqueeze(0).unsqueeze(0).to(device)
         
         # Check if audio is too short or empty
         if len(y) == 0:
@@ -119,7 +116,7 @@ def process_single_audio_file(audio_path, target, embeddings, means, stds,
         audio_tensor = torch.tensor(y_adj).unsqueeze(0).unsqueeze(0).to(device)
         
         with torch.no_grad():
-            processed = generator.predict(audio_tensor, target)
+            processed = generator.evaluate(audio_tensor, embeddings, means, stds)
 
         # Save processed 44.1 kHz version
         processed_np = processed.squeeze().cpu().numpy()

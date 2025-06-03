@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Optional, Sequence, Union, Tuple
+from typing import Callable, Optional, Sequence, Union, Tuple, List
 
 import cached_conv as cc
 import gin
@@ -178,19 +178,16 @@ class Encoder(nn.Module):
 
         self.net = cc.CachedSequential(*net)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
         if self.spectrogram is not None:
             x = self.spectrogram(x[:, 0])[..., :-1]
             x = torch.log1p(x)
-
         x = self.net(x)
-
         if self.n_out > 1:
             return torch.chunk(x, 2, dim=1)
         else:
-            return x
-
-
+            return [x]  # Always return a list
+        
 class SpeakerEncoder(nn.Module):
 
     def __init__(self, activation = lambda dim: nn.LeakyReLU(.2)):
