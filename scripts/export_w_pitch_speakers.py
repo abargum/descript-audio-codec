@@ -45,7 +45,7 @@ class ScriptedRAVE(nn_tilde.Module):
         self.decoder = pretrained.decoder
         self.pitch_encoder = pitch_enc
         
-        self.adapter = pretrained.adapter
+        #self.adapter = pretrained.adapter
         self.latent_query = pretrained.latent_query
         self.timbre_encoder = pretrained.timbre_encoder
         self.timbre_tokenizer = pretrained.timbre_tokenizer
@@ -74,8 +74,8 @@ class ScriptedRAVE(nn_tilde.Module):
 
         x_m = x.clone() if self.pqmf is None else self.pqmf(x)
 
-        z1, z2 = self.encoder(x_m[:, :6, :])
-        ratio_encode = x_len // z1.shape[-1]
+        z = self.encoder(x_m[:, :6, :])[0]
+        ratio_encode = x_len // z.shape[-1]
         channels = ["(L)", "(R)"] if stereo else ["(mono)"]
 
         self.register_method(
@@ -135,9 +135,9 @@ class ScriptedRAVE(nn_tilde.Module):
         shifted_pitch = self.p_tracker(f0_pred)
         shifted_pitch = shifted_pitch * p
 
-        outputs = self.encoder(x[:, :6, :])
-        z1, z2 = outputs[0], outputs[1]
-        z = self.adapter(z1, z2)
+        z = self.encoder(x[:, :6, :])[0]
+        #z1, z2 = outputs[0], outputs[1]
+        #z = self.adapter(z1, z2)
 
         emb = self.speaker.repeat(z.shape[0], 1, z.shape[-1]) * s
 
