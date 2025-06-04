@@ -5,6 +5,7 @@ import torch
 from typing import Tuple
 import argparse
 from scipy.io import wavfile 
+import soundfile as sf
 
 torch.set_grad_enabled(False)
 
@@ -52,7 +53,7 @@ class ScriptedRAVE(nn_tilde.Module):
         self.timbre_embedding = pretrained.timbre_embedding
 
         self.speaker = nn.Parameter(init_emb)
-        self.register_buffer("f0_mean", torch.tensor([181.00]))
+        self.register_buffer("f0_mean", torch.tensor([198.22]))
 
         self.p_tracker = SimplePitchTracker(target_mean=self.f0_mean)
         self.resampler = None
@@ -125,10 +126,10 @@ class ScriptedRAVE(nn_tilde.Module):
 
         logits = self.pitch_encoder(x[:, :6, :])[0]
         periodicity = entropy(logits)
-        uv = threshold(periodicity)
+        #uv = threshold(periodicity)
         
         f0_pred = torch.argmax(logits, dim=1)
-        f0_pred = bins_to_frequency(f0_pred) * uv
+        f0_pred = bins_to_frequency(f0_pred) #* uv
         f0_pred = f0_pred.unsqueeze(1)
 
         shifted_pitch = self.p_tracker(f0_pred)
@@ -225,7 +226,7 @@ def main():
         if hasattr(m, "weight_g"):
             nn.utils.remove_weight_norm(m)
 
-    emb_audio, _ = librosa.load("scripts/audio/p225_004.wav", sr=44100, mono=True)
+    emb_audio, _ = librosa.load("vctk-small/p228/p228_004.wav", sr=44100, mono=True)
     emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
     emb_audio = generator.pqmf(emb_audio)
     emb = speaker_encoder(emb_audio).unsqueeze(-1)
@@ -240,8 +241,17 @@ def main():
     )
 
     # ------ FOR TEST ------
-    x, sr = librosa.load("scripts/audio/p225_004.wav", sr=44100, mono=True)
+    x, sr = librosa.load("libri-dev-set/1272_128104_000003_000002.wav", sr=44100, mono=True)
     x = torch.tensor(x[:2*131072]).unsqueeze(0).unsqueeze(0)
+
+    out = generator.get_val_audio(x)['audio']
+    out = out.squeeze().detach().cpu().numpy()
+    sf.write('audio/output/export_test_model.wav', out, 44100)
+    
+    out = scripted_rave((x, torch.ones(1), torch.ones(1)))
+    out = out.squeeze().detach().cpu().numpy()
+    sf.write('audio/output/export_test_full.wav', out, 44100)
+    
     chunk_size = 2048
     num_chunks = (x.shape[-1] + chunk_size - 1) // chunk_size
 
@@ -264,7 +274,7 @@ def main():
     
     out = torch.cat(processed_chunks, dim=-1)
     out = out[0, 0, :].detach().cpu().numpy()
-    wavfile.write('audio/output/export_test.wav', sr, out)
+    wavfile.write('audio/output/export_test_chunk.wav', sr, out)
     
     # ----------------------
     

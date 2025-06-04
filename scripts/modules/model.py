@@ -90,7 +90,7 @@ class VoiceModel(BaseModel):
                                  capacity = capacity_content_encoder,
                                  ratios = ratios,
                                  latent_size = latent_size_content_encoder,
-                                 n_out = 2,
+                                 n_out = 1,
                                  kernel_size = kernel_size,
                                  dilations = dilations
         )
@@ -130,7 +130,7 @@ class VoiceModel(BaseModel):
         self.speaker_encoder.load_state_dict(spk_state)
         self.speaker_encoder.eval()
 
-        self.adapter = TimeAxisAdapter(feature_dim=latent_size_content_encoder, hidden_dim=32)
+        #self.adapter = TimeAxisAdapter(feature_dim=latent_size_content_encoder, hidden_dim=32)
 
         self.latent_query = nn.Parameter(torch.randn(1, 128, 50))
         self.timbre_tokenizer = CausalMultiheadAttention2(keys=64,
@@ -149,7 +149,7 @@ class VoiceModel(BaseModel):
                                                           heads=8)
         
         self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder)
-        self.ce_projection_wavlm = CrossEntropyProjectionWavLM(channels=latent_size_content_encoder)
+        #self.ce_projection_wavlm = CrossEntropyProjectionWavLM(channels=latent_size_content_encoder)
 
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
@@ -202,12 +202,12 @@ class VoiceModel(BaseModel):
         audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
         audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
         
-        outputs = self.encoder(audio_multiband_aug[:, :6, :])
-        z1, z2 = outputs[0], outputs[1]
-        z = self.adapter(z1, z2)
+        z = self.encoder(audio_multiband_aug[:, :6, :])[0]
+        #z1, z2 = outputs[0], outputs[1]
+        #z = self.adapter(z1, z2)
 
-        projected_z_hubert = self.ce_projection_hubert(z1)
-        projected_z_wavlm = self.ce_projection_wavlm(z2)
+        projected_z_hubert = self.ce_projection_hubert(z)
+        #projected_z_wavlm = self.ce_projection_wavlm(z2)
 
         z = z.detach()
        
@@ -238,7 +238,7 @@ class VoiceModel(BaseModel):
         return {
             "audio": y[..., :length],
             "projected_z_hubert": projected_z_hubert,
-            "projected_z_wavlm": projected_z_wavlm,
+            #"projected_z_wavlm": projected_z_wavlm,
             "p_audio": audio_aug.unsqueeze(1),
             "x_multiband": audio_multiband,
             "y_multiband": y_multiband,
@@ -258,9 +258,9 @@ class VoiceModel(BaseModel):
         loudness = extract_loudness(audio_data, sr=self.sample_rate)
         loudness = (10 ** (loudness / 20))
         
-        outputs = self.encoder(audio_multiband[:, :6, :])
-        z1, z2 = outputs[0], outputs[1]
-        z = self.adapter(z1, z2)
+        z = self.encoder(audio_multiband[:, :6, :])[0]
+        #z1, z2 = outputs[0], outputs[1]
+        #z = self.adapter(z1, z2)
        
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
@@ -319,9 +319,9 @@ class VoiceModel(BaseModel):
         in_med, in_std = extract_f0_mean_std(f0_in)
         tar_med, tar_std = extract_f0_mean_std(f0_target)
             
-        outputs = self.encoder(audio_multiband[:, :6, :])
-        z1, z2 = outputs[0], outputs[1]
-        z = self.adapter(z1, z2)
+        z = self.encoder(audio_multiband[:, :6, :])[0]
+        #z1, z2 = outputs[0], outputs[1]
+        #z = self.adapter(z1, z2)
 
         with torch.no_grad():
             emb = self.speaker_encoder(target_multiband).unsqueeze(2)
@@ -378,9 +378,9 @@ class VoiceModel(BaseModel):
         
         in_mean, in_std = extract_f0_mean_std(f0_in)
         
-        outputs = self.encoder(audio_multiband[:, :6, :])
-        z1, z2 = outputs[0], outputs[1]
-        z = self.adapter(z1, z2)
+        z = self.encoder(audio_multiband[:, :6, :])[0]
+        #z1, z2 = outputs[0], outputs[1]
+        #z = self.adapter(z1, z2)
 
         emb = target_emb.unsqueeze(2).repeat(1, 1, z.shape[-1]).to(z)
 
