@@ -121,3 +121,47 @@ def extract_rms(signal: torch.Tensor, frame_size: int, hop_size: Optional[int] =
         return rms_values.transpose(2,1)
     else:
         return rms_values
+
+def mask_raw_audio_tensor(audio, sample_rate=16000, min_mask_ms=50, max_mask_ms=250, mask_prob=0.1, mask_value=0.0):
+    """
+    Apply random time-span masking to batched raw audio tensor of shape (B, 1, T),
+    with randomized mask durations.
+
+    Args:
+        audio (torch.Tensor): Batched audio tensor of shape (B, 1, T)
+        sample_rate (int): Sampling rate in Hz (default: 16000)
+        min_mask_ms (int): Minimum duration of a mask in ms
+        max_mask_ms (int): Maximum duration of a mask in ms
+        mask_prob (float): Fraction of total audio length to consider for masking
+        mask_value (float): Value to fill in the masked region (e.g., 0.0 or noise)
+
+    Returns:
+        torch.Tensor: Masked audio of shape (B, 1, T)
+    """
+    B, _, T = audio.shape
+    audio = audio.clone()
+
+    total_audio_ms = (T / sample_rate) * 1000
+    estimated_mask_count = int((total_audio_ms / ((min_mask_ms + max_mask_ms) / 2)) * mask_prob)
+
+    for b in range(B):
+        for _ in range(estimated_mask_count):
+            mask_ms = torch.randint(min_mask_ms, max_mask_ms + 1, (1,)).item()
+            mask_len = int(sample_rate * mask_ms / 1000.0)
+            if mask_len >= T:
+                continue
+            start = torch.randint(0, T - mask_len + 1, (1,)).item()
+            audio[b, 0, start:start + mask_len] = mask_value
+
+    return audio
+
+def buffered_arange(max, device="cuda"):
+    if not hasattr(buffered_arange, "buf"):
+        buffered_arange.buf = torch.LongTensor().to(device)
+    if max > buffered_arange.buf.numel():
+        buffered_arange.buf.resize_(max)
+        torch.arange(max, out=buffered_arange.buf)
+    return buffered_arange.buf[:max]
+
+def is_xla_tensor(tensor):
+    return torch.is_tensor(tensor) and tensor.device.type == "xla"

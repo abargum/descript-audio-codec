@@ -13,7 +13,7 @@ from .pqmf import CachedPQMF as PQMF
 from .attention import DiTBlock
 
 from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
-from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_loudness, extract_rms
+from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_loudness, extract_rms, mask_raw_audio_tensor, buffered_arange, is_xla_tensor
 
 class CrossEntropyProjectionHuBERT(nn.Module):
     def __init__(self, channels):
@@ -85,7 +85,7 @@ class VoiceModel(BaseModel):
         self.speaker_encoder.load_state_dict(spk_state)
         self.speaker_encoder.eval()
         
-        self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder)
+        self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder + 256)
 
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
@@ -95,6 +95,9 @@ class VoiceModel(BaseModel):
         probabilities = {"shift": 0.5, "peq": 0.5, "noise": 0.5}
 
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
+        
+        self.n_negatives = 100
+        self.cross_sample_negatives = 0
 
     def load_speaker_statedict(self, path):
         loaded_state = torch.load(path, map_location="cuda")
@@ -119,17 +122,143 @@ class VoiceModel(BaseModel):
                 
         return loaded_state, pqmfdict
 
+    def sample_negatives(self, y, num):
+        
+        if self.n_negatives == 0 and self.cross_sample_negatives == 0:
+            return y.new(0)
+
+        bsz, tsz, fsz = y.shape
+        y = y.reshape(-1, fsz)  # BTC => (BxT)C
+
+        cross_high = tsz * bsz
+        high = tsz
+        with torch.no_grad():
+            assert high > 1, f"{bsz,tsz,fsz}"
+
+            if self.n_negatives > 0:
+                tszs = (
+                    buffered_arange(num)
+                    .unsqueeze(-1)
+                    .expand(-1, self.n_negatives)
+                    .flatten()
+                ).to(y)
+
+                neg_idxs = torch.randint(
+                    low=0, high=high - 1, size=(bsz, self.n_negatives * num)
+                ).to(y)
+                
+                neg_idxs[neg_idxs >= tszs] += 1
+
+            if self.cross_sample_negatives > 0:
+                tszs = (
+                    buffered_arange(num)
+                    .unsqueeze(-1)
+                    .expand(-1, self.cross_sample_negatives)
+                    .flatten()
+                )
+
+                cross_neg_idxs = torch.randint(
+                    low=0,
+                    high=cross_high - 1,
+                    size=(bsz, self.cross_sample_negatives * num),
+                )
+                cross_neg_idxs[cross_neg_idxs >= tszs] += 1
+
+        if self.n_negatives > 0:
+            neg_idxs = neg_idxs + (torch.arange(bsz).unsqueeze(1).to(y) * high)
+        else:
+            neg_idxs = cross_neg_idxs
+
+        if self.cross_sample_negatives > 0 and self.n_negatives > 0:
+            neg_idxs = torch.cat([neg_idxs, cross_neg_idxs], dim=1)
+
+        negs = y[neg_idxs.type(torch.LongTensor).view(-1)]
+        negs = negs.view(
+            bsz, num, self.n_negatives + self.cross_sample_negatives, fsz
+        ).permute(
+            2, 0, 1, 3
+        )  # to NxBxTxC
+        return negs, neg_idxs
+
+    def compute_sim(self, x, y, negatives):
+
+        neg_is_pos = (y == negatives).all(-1)
+        y = y.unsqueeze(0)
+        targets = torch.cat([y, negatives], dim=0)
+
+        logits = torch.cosine_similarity(x.float(), targets.float(), dim=-1).type_as(x)
+
+        logits = logits / 0.1
+
+        if is_xla_tensor(logits) or neg_is_pos.any():
+            fillval = -float(2 ** 30)
+            if not hasattr(self, "_inftensor"):
+                self._inftensor = (
+                    torch.tensor(fillval).to(x.device)
+                    if is_xla_tensor(logits)
+                    else float("-inf")
+                )
+            logits[1:] = index_put(logits[1:], neg_is_pos, self._inftensor)
+
+        return logits
+
+    def get_logits_ctr(self, logits_list):
+        logits = logits_list[0]
+        logits = logits.transpose(0, 2)
+        logits_B = logits.reshape(-1, logits.size(-1))
+        return logits_B
+
+    def get_targets_ctr(self, logits_list):
+        logits = logits_list[0]
+        return logits.new_zeros(
+            logits.size(1) * logits.size(2) * len(logits_list), 
+            dtype=torch.long)
+
     def forward(self,
                 audio_data: torch.Tensor,
                 sample_rate: int = None):
         
         length = audio_data.shape[-1]
 
+        # --- augment and calculate contrastive loss
+        audio_aug1 = self.transforms({'audio': audio_data.squeeze(1)})['audio']
+        audio_aug1 = audio_aug1.unsqueeze(1)
+
+        audio_aug2 = self.transforms({'audio': audio_data.squeeze(1)})['audio']
+        audio_aug2 = audio_aug2.unsqueeze(1)
+
+        score_list = []
+
+        za_1 = self.encoder(audio_aug1).transpose(2,1)
+        za_2 = self.encoder(audio_aug2).transpose(2,1)
+
+        negs_1, _ = self.sample_negatives(za_1, za_1.size(1))
+        negs_2, _ = self.sample_negatives(za_2, za_1.size(1))
+
+        zctr_1 = self.compute_sim(za_1, za_2, negs_1)
+        zctr_2 = self.compute_sim(za_2, za_1, negs_2)
+
+        z_ctr = torch.cat((zctr_1, zctr_2), dim=1)
+
+        score_list.append(z_ctr)
+
+        logits_ctr = self.get_logits_ctr(score_list).float()
+        target_ctr = self.get_targets_ctr(score_list)
+
+        # --- mask
+        audio_aug1_masked = mask_raw_audio_tensor(audio_aug1, sample_rate=self.sample_rate, mask_prob=0.3)
+        audio_aug2_masked = mask_raw_audio_tensor(audio_aug2, sample_rate=self.sample_rate, mask_prob=0.3)
+
+        z1 = self.encoder(audio_aug1)
+        z2 = self.encoder(audio_aug2)
+
+        # --- resample for speaker
         audio_resampled = resample(audio_data, self.sample_rate, 44100)
         zeros = torch.zeros(audio_data.shape[0], 1, 40755).to(audio_data)
         audio_resampled = torch.cat((audio_resampled, zeros), dim=-1)
         audio_multiband = self.pqmf(audio_resampled)
 
+        # --- excitation features
         pitch_logits = self.pitch_encoder(audio_data)
         
         f0 = torch.argmax(pitch_logits, dim=1)
@@ -139,31 +268,29 @@ class VoiceModel(BaseModel):
         loudness = extract_loudness(audio_data, sr=self.sample_rate, block_size=256)
         loudness = (10 ** (loudness / 20))
 
-        audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
-        audio_aug = audio_aug.unsqueeze(1)
-        
-        z = self.encoder(audio_aug)
+        # --- decode
        
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z.shape[-1])
+        emb = emb.repeat(1, 1, z1.shape[-1])
 
-        z_cat = torch.cat((z.detach(), emb), dim=1)
+        z_cat = torch.cat((z1.detach(), emb), dim=1)
 
-        y_multiband, nsf_source = self.decoder(z_cat,
-                                               f0.unsqueeze(1),
-                                               periodicity.unsqueeze(1),
-                                               loudness.unsqueeze(1))
-        
-        y = y_multiband
+        y, nsf_source = self.decoder(z_cat,
+                                     f0.unsqueeze(1),
+                                     periodicity.unsqueeze(1),
+                                     loudness.unsqueeze(1))
 
-        projected_z_hubert = self.ce_projection_hubert(z)
+        # --- z prediction 
+        projected_z_hubert_1 = self.ce_projection_hubert(torch.cat((z1, emb), dim=1))
+        projected_z_hubert_2 = self.ce_projection_hubert(torch.cat((z2, emb), dim=1))
         
         return {
             "audio": y[..., :length],
-            "projected_z_hubert": projected_z_hubert,
-            "p_audio": audio_aug.unsqueeze(1),
-            "x_multiband": audio_multiband,
-            "y_multiband": y_multiband,
+            "projected_z_hubert_1": projected_z_hubert_1,
+            "projected_z_hubert_2": projected_z_hubert_2,
+            "p_audio": audio_aug1.unsqueeze(1),
+            "logits_ctr": logits_ctr,
+            "target_ctr": target_ctr,
         }
 
     def get_val_audio(self, audio_data: torch.Tensor):

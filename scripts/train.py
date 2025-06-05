@@ -301,9 +301,21 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
         
-        projected_z_hubert = out["projected_z_hubert"]
+        projected_z_hubert_1 = out["projected_z_hubert_1"]
+        projected_z_hubert_2 = out["projected_z_hubert_2"]
 
-        unit_loss_hubert = torch.nn.functional.cross_entropy(projected_z_hubert, target_units_hubert.type(torch.int64).to(recons.device))
+        logits_ctr = out["logits_ctr"]
+        target_ctr = out["target_ctr"]
+
+        loss_ctr = F.cross_entropy(logits_ctr, target_ctr, reduction="sum")
+        
+        ctr_lambda *= (state.tracker.step * 0.00001)
+        if ctr_lambda > 10.0:
+            ctr_lambda = 10.0
+
+        unit_loss_hubert_1 = torch.nn.functional.cross_entropy(projected_z_hubert_1, target_units_hubert.type(torch.int64).to(recons.device))
+        unit_loss_hubert_2 = torch.nn.functional.cross_entropy(projected_z_hubert_2, target_units_hubert.type(torch.int64).to(recons.device))
+        unit_loss_hubert = unit_loss_hubert_1 + unit_loss_hubert_2
 
     if state.warmed_up:
         with accel.autocast():
@@ -324,6 +336,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         output["gen/mel"] = state.mel_loss(recons, signal)
         output["gen/waveform"] = state.waveform_loss(recons, signal)
         output["gen/unit_hubert"] = unit_loss_hubert
+        output["gen/contrastive"] = loss_ctr * ctr_lambda
         if state.warmed_up:
            (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
         output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
@@ -458,6 +471,7 @@ def train(
           "gen/multiband": 3.0,
           "gen/unit_hubert": 1.0,
           "gen/unit_wavlm": 1.0,
+          "gen/contrastive": 1.0,
           "adv/feat_loss": 2.0,
           "adv/gen_loss": 1.0,
     },
