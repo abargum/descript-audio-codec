@@ -184,11 +184,7 @@ class Encoder(nn.Module):
             x = torch.log1p(x)
 
         x = self.net(x)
-
-        if self.n_out > 1:
-            return torch.chunk(x, 2, dim=1)
-        else:
-            return x
+        return x
 
 
 class SpeakerEncoder(nn.Module):

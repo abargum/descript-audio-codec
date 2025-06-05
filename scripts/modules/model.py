@@ -5,6 +5,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from audiotools.ml import BaseModel
+from torchaudio.functional import resample
 
 from .decoder import Generator
 from .encoder import SpeakerEncoder, Encoder
@@ -14,53 +15,16 @@ from .attention import DiTBlock
 from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
 from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_loudness, extract_rms
 
-class TimeAxisAdapter(nn.Module):
-    def __init__(self, feature_dim=64, hidden_dim=32):
-        super().__init__()
-        
-        self.attention_net = nn.Sequential(
-            nn.Linear(feature_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
-            nn.Sigmoid()
-        )
-        
-    def forward(self, x1, x2):
-        assert x1.shape == x2.shape, f"Input shapes must match: {x1.shape} vs {x2.shape}"
-        B, F, T = x1.shape
-        
-        x1_t = x1.transpose(1, 2)
-        x2_t = x2.transpose(1, 2) 
-        
-        concat_features = torch.cat([x1_t, x2_t], dim=2)
-        weights = self.attention_net(concat_features)
-        
-        output = weights * x1_t + (1 - weights) * x2_t
-        output = output.transpose(1, 2)
-        return output
-
 class CrossEntropyProjectionHuBERT(nn.Module):
     def __init__(self, channels):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(channels)
+        self.layer_norm = torch.nn.LayerNorm(128)
         self.proj = nn.Conv1d(channels, 100, 1, bias=False)
         
     def forward(self, x):
         z_for_CE = self.layer_norm(x)
         z_for_CE = self.proj(z_for_CE)
-        z_for_CE = F.interpolate(z_for_CE, 74)
-        return z_for_CE
-
-class CrossEntropyProjectionWavLM(nn.Module):
-    def __init__(self, channels):
-        super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(channels)
-        self.proj = nn.Conv1d(channels, 512, 1, bias=False)
-        
-    def forward(self, x):
-        z_for_CE = self.layer_norm(x)
-        z_for_CE = self.proj(z_for_CE)
-        z_for_CE = F.interpolate(z_for_CE, 74)
+        z_for_CE = F.interpolate(z_for_CE, 102)
         return z_for_CE
 
 class VoiceModel(BaseModel):
@@ -70,13 +34,13 @@ class VoiceModel(BaseModel):
         latent_size_content_encoder = 64,
         latent_size_pitch_encoder = 1440,
         capacity_content_encoder = 64,
-        capacity_pitch_encoder = 16,
-        capacity_decoder = 96,
+        capacity_pitch_encoder = 32,
+        capacity_decoder = 64,
         kernel_size = 3,
-        ratios = [4, 4, 2, 2],
+        ratios = [8, 4, 4, 2],
         dilations = [[1, 3, 9], [1, 3, 9], [1, 3, 9], [1, 3]],
-        sampling_rate = 44100,
-        downsampling_rate = 1024,
+        sampling_rate = 16000,
+        downsampling_rate = 256,
         valid_signal_crop = True):
         
         super().__init__()
@@ -86,54 +50,49 @@ class VoiceModel(BaseModel):
 
         self.pqmf = PQMF(attenuation = 100, n_band = 16)
 
-        self.encoder = Encoder(data_size = 6,
-                                 capacity = capacity_content_encoder,
+        self.encoder = Encoder(data_size = 1,
+                               capacity = capacity_content_encoder,
+                               ratios = ratios,
+                               latent_size = latent_size_content_encoder,
+                               n_out = 1,
+                               kernel_size = kernel_size,
+                               dilations = dilations
+        )
+
+        self.decoder = Generator(data_size = 1,
+                                 capacity = capacity_decoder,
                                  ratios = ratios,
-                                 latent_size = latent_size_content_encoder,
-                                 n_out = 2,
+                                 latent_size = latent_size_content_encoder + 256,
                                  kernel_size = kernel_size,
+                                 sampling_rate = sampling_rate,
                                  dilations = dilations
         )
 
-        self.decoder = Generator(data_size = 16,
-                                       capacity = capacity_decoder,
-                                       ratios = ratios,
-                                       latent_size = latent_size_content_encoder + 256,
-                                       kernel_size = kernel_size,
-                                       sampling_rate = sampling_rate,
-                                       dilations = dilations
+        self.pitch_encoder = Encoder(data_size = 1,
+                                     capacity = capacity_pitch_encoder,
+                                     ratios = ratios,
+                                     latent_size = latent_size_pitch_encoder,
+                                     n_out = 1,
+                                     kernel_size = kernel_size,
+                                     dilations = dilations
         )
 
-        self.pitch_encoder = Encoder(data_size = 6,
-                                            capacity = capacity_pitch_encoder,
-                                            ratios = ratios,
-                                            latent_size = latent_size_pitch_encoder,
-                                            n_out = 1,
-                                            kernel_size = kernel_size,
-                                            dilations = dilations
-        )
-
-        self.pitch_encoder.load_state_dict(torch.load(f"scripts/utils/caus_pitch_enc_16.pth", weights_only=True))
+        self.pitch_encoder.load_state_dict(torch.load(f"scripts/utils/16_no_pqmf.pth", weights_only=True))
         self.pitch_encoder.eval()
 
         self.speaker_encoder = SpeakerEncoder()
         spk_state, pqmf_state = self.load_speaker_statedict("scripts/utils/model000000075.model")
         self.speaker_encoder.load_state_dict(spk_state)
         self.speaker_encoder.eval()
-
-        self.adapter = TimeAxisAdapter(feature_dim=latent_size_content_encoder, hidden_dim=32)
-
-        #self.content_block = DiTBlock(hidden_size=latent_size_content_encoder, num_heads=2, causal=True)
         
         self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder)
-        self.ce_projection_wavlm = CrossEntropyProjectionWavLM(channels=latent_size_content_encoder)
 
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
         parametric_eq = SloppyPEQ(sample_rate=self.sample_rate, gain_range=[-15.0, 15.0])
 
-        transforms = {"peq": parametric_eq, "noise": add_noise}
-        probabilities = {"peq": 0.5, "noise": 0.5}
+        transforms = {"shift": shift_pitch, "peq": parametric_eq, "noise": add_noise}
+        probabilities = {"shift": 0.5, "peq": 0.5, "noise": 0.5}
 
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
 
@@ -166,25 +125,24 @@ class VoiceModel(BaseModel):
         
         length = audio_data.shape[-1]
 
-        audio_multiband = self.pqmf(audio_data)
-        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])
+        audio_resampled = resample(audio_data, self.sample_rate, 44100)
+        zeros = torch.zeros(audio_data.shape[0], 1, 40755).to(audio_data)
+        audio_resampled = torch.cat((audio_resampled, zeros), dim=-1)
+        audio_multiband = self.pqmf(audio_resampled)
+
+        pitch_logits = self.pitch_encoder(audio_data)
         
         f0 = torch.argmax(pitch_logits, dim=1)
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)
         
-        loudness = extract_loudness(audio_data, sr=self.sample_rate)
+        loudness = extract_loudness(audio_data, sr=self.sample_rate, block_size=256)
         loudness = (10 ** (loudness / 20))
 
         audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
-        audio_multiband_aug = self.pqmf(audio_aug.unsqueeze(1))
+        audio_aug = audio_aug.unsqueeze(1)
         
-        z1, z2 = self.encoder(audio_multiband_aug[:, :6, :])
-        z = self.adapter(z1, z2)
-        #z = self.content_block(z1.transpose(2,1), z2.transpose(2,1))
-
-        projected_z_hubert = self.ce_projection_hubert(z1)
-        projected_z_wavlm = self.ce_projection_wavlm(z2)
+        z = self.encoder(audio_aug)
        
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
@@ -196,12 +154,13 @@ class VoiceModel(BaseModel):
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
         
-        y = self.pqmf.inverse(y_multiband)
+        y = y_multiband
+
+        projected_z_hubert = self.ce_projection_hubert(z)
         
         return {
             "audio": y[..., :length],
             "projected_z_hubert": projected_z_hubert,
-            "projected_z_wavlm": projected_z_wavlm,
             "p_audio": audio_aug.unsqueeze(1),
             "x_multiband": audio_multiband,
             "y_multiband": y_multiband,
@@ -211,19 +170,20 @@ class VoiceModel(BaseModel):
         
         length = audio_data.shape[-1]
         
-        audio_multiband = self.pqmf(audio_data)
+        audio_resampled = resample(audio_data, self.sample_rate, 44100)
+        zeros = torch.zeros(audio_data.shape[0], 1, 40755).to(audio_data)
+        audio_resampled = torch.cat((audio_resampled, zeros), dim=-1)
+        audio_multiband = self.pqmf(audio_resampled)
         
-        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])
+        pitch_logits = self.pitch_encoder(audio_data)
         f0 = torch.argmax(pitch_logits, dim=1)
         f0 = bins_to_frequency(f0)
         periodicity = entropy(pitch_logits)   
 
-        loudness = extract_loudness(audio_data, sr=self.sample_rate)
+        loudness = extract_loudness(audio_data, sr=self.sample_rate, block_size=256)
         loudness = (10 ** (loudness / 20))
         
-        z1, z2 = self.encoder(audio_multiband[:, :6, :])
-        z = self.adapter(z1, z2)
-        #z = self.content_block(z1.transpose(2,1), z2.transpose(2,1))
+        z = self.encoder(audio_data)
        
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
@@ -235,7 +195,7 @@ class VoiceModel(BaseModel):
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
         
-        y = self.pqmf.inverse(y_multiband)
+        y = y_multiband
         
         return {"audio": y[..., :length]}
 
@@ -244,10 +204,12 @@ class VoiceModel(BaseModel):
 
         length = audio_data.shape[-1]
 
-        audio_multiband = self.pqmf(audio_data)
-        target_multiband = self.pqmf(target)
+        target_resampled = resample(target, self.sample_rate, 44100)
+        zeros = torch.zeros(target.shape[0], 1, 40755).to(audio_data)
+        target_resampled = torch.cat((target_resampled, zeros), dim=-1)
+        target_multiband = self.pqmf(target_resampled)
 
-        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])
+        pitch_logits = self.pitch_encoder(audio_data)
         periodicity = entropy(pitch_logits)
 
         if pitch_mode == 'fcpe':
@@ -258,19 +220,17 @@ class VoiceModel(BaseModel):
         else:
             f0_in = torch.argmax(pitch_logits, dim=1)
             f0_in = bins_to_frequency(f0_in)
-            pitch_logits = self.pitch_encoder(target_multiband[:, :6, :])
+            pitch_logits = self.pitch_encoder(target)
             f0_target = torch.argmax(pitch_logits, dim=1)
             f0_target = bins_to_frequency(f0_target)
 
-
-        loudness = extract_loudness(audio_data, sr=self.sample_rate)
+        loudness = extract_loudness(audio_data, sr=self.sample_rate, block_size=256)
         loudness = (10 ** (loudness / 20))
         
         in_med, in_std = extract_f0_mean_std(f0_in)
         tar_med, tar_std = extract_f0_mean_std(f0_target)
                 
-        z1, z2 = self.encoder(audio_multiband[:, :6, :])
-        z = self.adapter(z1, z2)
+        z = self.encoder(audio_data)
 
         with torch.no_grad():
             emb = self.speaker_encoder(target_multiband).unsqueeze(2)
@@ -290,7 +250,7 @@ class VoiceModel(BaseModel):
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
 
-        y = self.pqmf.inverse(y_multiband)
+        y = y_multiband
         
         return y[..., :length]
 
@@ -298,9 +258,7 @@ class VoiceModel(BaseModel):
 
         length = audio_data.shape[-1]
 
-        audio_multiband = self.pqmf(audio_data)
-
-        pitch_logits = self.pitch_encoder(audio_multiband[:, :6, :])
+        pitch_logits = self.pitch_encoder(audio_data)
         periodicity = entropy(pitch_logits)
 
         if pitch_mode == 'fcpe':
@@ -310,13 +268,12 @@ class VoiceModel(BaseModel):
             f0_in = torch.argmax(pitch_logits, dim=1)
             f0_in = bins_to_frequency(f0_in)
 
-        loudness = extract_loudness(audio_data, sr=self.sample_rate)
+        loudness = extract_loudness(audio_data, sr=self.sample_rate, block_size=256)
         loudness = (10 ** (loudness / 20))
         
         in_mean, in_std = extract_f0_mean_std(f0_in)
         
-        z1, z2 = self.encoder(audio_multiband[:, :6, :])
-        z = self.adapter(z1, z2)
+        z = self.encoder(audio_data)
 
         emb = target_emb.unsqueeze(2).repeat(1, 1, z.shape[-1])
 
@@ -333,6 +290,6 @@ class VoiceModel(BaseModel):
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
 
-        y = self.pqmf.inverse(y_multiband)
+        y = y_multiband
         
         return y

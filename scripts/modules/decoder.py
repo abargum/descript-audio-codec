@@ -220,7 +220,7 @@ class Generator(nn.Module):
 
         self.conditioning_stages = [2, 6, 11, 16]
 
-        sine_conv_kernels = [512, 256, 64, 16]
+        sine_conv_kernels = [512, 128, 32, 4]
         downsampling_channels = []
 
         net = []
@@ -312,15 +312,15 @@ class Generator(nn.Module):
             x = layer(x)
             if i in self.conditioning_stages:
                 if i == 2:
-                    ex_down = self.conditioning_layers[0](x, har_source)
+                    x = self.conditioning_layers[0](x, har_source)
                 elif i == 6:
-                    ex_down = self.conditioning_layers[1](x, har_source)
+                    x = self.conditioning_layers[1](x, har_source)
                 elif i == 11:
-                    ex_down = self.conditioning_layers[2](x, har_source)
+                    x = self.conditioning_layers[2](x, har_source)
                 else:
-                    ex_down = self.conditioning_layers[3](x, har_source)
+                    x = self.conditioning_layers[3](x, har_source)
                     
-                x = x + ex_down
+                #x = x + ex_down
                 iterator += 1
 
         if self.amplitude_modulation:

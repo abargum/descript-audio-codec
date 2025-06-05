@@ -12,23 +12,6 @@ from transformers import AutoProcessor, WavLMModel
 discrete_units = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True).to(torch.device("cuda"))
 discrete_units.eval()
 
-# Load WavLM model with pre-trained kmeans
-pretrained_path = "scripts/utils/kmeans_512_wavlm.pt"
-num_clusters = 512
-model_wavlm = WavLMModel.from_pretrained("patrickvonplaten/wavlm-libri-clean-100h-base-plus").to(torch.device("cuda"))
-kmean_unit_extractor = kmeans(pretrained=True, clusters=num_clusters, checkpoint=pretrained_path)
-
-#model_name = "facebook/w2v-bert-2.0"  # Use the appropriate W2VBert model
-#processor = AutoProcessor.from_pretrained(model_name)
-#model = AutoModel.from_pretrained(model_name).to(device)
-
-def get_wavlm_units(audio):
-    output = model_wavlm(audio)
-    output = output.last_hidden_state.squeeze(0)
-    units = kmean_unit_extractor.predict(output.squeeze().detach().cpu().numpy())
-    units = torch.tensor(units, dtype=torch.long)
-    return units, output.squeeze().detach().cpu()
-
 def get_hubert_units(audio):
     units = discrete_units.units(audio.unsqueeze(0))
     return units.detach().cpu()
@@ -46,22 +29,10 @@ def get_features(file_path, sr):
     #zero pad end with one second to ensure that the offset does not go out of range
     zeros = torch.zeros(1, sr).to(torch.device('cuda'))
     x = torch.cat((x, zeros), dim=-1)
-    
-    x_resampled = resample(x, sr, 16000)
 
-    hubert_units = get_hubert_units(x_resampled)
-    wavlm_units, wavlm_output = get_wavlm_units(x_resampled)
-
-    #if wavlm units a smaller repeat last value
-    if wavlm_units.shape[0] < hubert_units.shape[0]:
-        diff = hubert_units.shape[0] - wavlm_units.shape[0]
-        last_val = wavlm_units[-1]
-        wavlm_units = torch.cat([wavlm_units, last_val.repeat(diff)])
+    hubert_units = get_hubert_units(x)
         
-        last_val = wavlm_output[-1:, :]  
-        wavlm_output = torch.cat([wavlm_output, last_val], dim=0)
-        
-    return hubert_units, wavlm_units, wavlm_output
+    return hubert_units
 
 def process_audio_directory(base_dirs, output_path, sample_rate):
     """
@@ -89,12 +60,10 @@ def process_audio_directory(base_dirs, output_path, sample_rate):
                     print(f"Processing {file_path}...")
                     
                     try:
-                        hubert_units, wavlm_units, wavlm_output = get_features(file_path, sample_rate)
+                        hubert_units = get_features(file_path, sample_rate)
                         
                         audio_data[file_path] = {
                             'hubert_units': hubert_units,
-                            'wavlm_units': wavlm_units,
-                            'wavlm_output': wavlm_output
                         }   
                         
                     except Exception as e:
@@ -112,7 +81,7 @@ base_directories = [
     "VCTK-Corpus/wav48",
     "validation-set",
 ]
-sample_rate = 44100
-output_file = "metadata_w_wavlm_full.pkl"
+sample_rate = 16000
+output_file = "metadata_16.pkl"
 
 process_audio_directory(base_directories, output_file, sample_rate)
