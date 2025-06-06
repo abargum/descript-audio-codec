@@ -6,6 +6,7 @@ import julius
 import torch.nn as nn
 from torch_pitch_shift import pitch_shift, semitones_to_ratio, get_fast_shifts
 import torchaudio.functional as F
+from .formant import formant_only
 
 def calculate_rms(samples):
     """
@@ -147,11 +148,36 @@ class PEQAug(torch.nn.Module):
         transformed = data.copy()
         transformed["audio"] = self.parametric_eq(data["audio"])
         return transformed
+
+
+# Formant Shifting Transformation
+class FormantShiftAug(nn.Module):
+    def __init__(self, sample_rate: int) -> None:
+        super().__init__()
+        self.sampling_rate = sample_rate
+
+    def forward(self, data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        batch_audio = data["audio"]  # Shape: (B, 1, length)
+        batch_size, length = batch_audio.shape
+        sample_rate = 16000  # Assuming a fixed sample rate; modify as needed
+
+        # Process each audio sample in the batch
+        transformed_audio = []
+        for i in range(batch_size):
+            manipulated_sound = formant_only(batch_audio[i], self.sampling_rate)
+            transformed_audio.append(torch.tensor(manipulated_sound))
+
+        # Stack the transformed audio into a single tensor
+        transformed_audio = torch.stack(transformed_audio, dim=0)
+        transformed_data = data.copy()
+        transformed_data["audio"] = transformed_audio.to('cuda')
+
+        return transformed_data
         
 
 # Based on torch-audiomentations (MIT License)
 class PitchAug(nn.Module):
-    def __init__(self, sample_rate, shift_range=[-6, 6]) -> None:
+    def __init__(self, sample_rate, shift_range=[-4, 4]) -> None:
         super().__init__()
         self.sample_rate = sample_rate
         self._fast_shifts = get_fast_shifts(

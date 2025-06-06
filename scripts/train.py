@@ -20,6 +20,8 @@ from audiotools.ml.decorators import timer
 from audiotools.ml.decorators import Tracker
 from audiotools.ml.decorators import when
 from torch.utils.tensorboard import SummaryWriter
+import torch.nn.functional as F
+import soundfile as sf
 
 from modules import losses
 from modules.discriminator import Discriminator
@@ -309,12 +311,12 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
 
         loss_ctr = F.cross_entropy(logits_ctr, target_ctr, reduction="sum")
         
-        ctr_lambda *= (state.tracker.step * 0.00001)
+        ctr_lambda = (state.tracker.step * 0.000001)
         if ctr_lambda > 10.0:
             ctr_lambda = 10.0
 
-        unit_loss_hubert_1 = torch.nn.functional.cross_entropy(projected_z_hubert_1, target_units_hubert.type(torch.int64).to(recons.device))
-        unit_loss_hubert_2 = torch.nn.functional.cross_entropy(projected_z_hubert_2, target_units_hubert.type(torch.int64).to(recons.device))
+        unit_loss_hubert_1 = F.cross_entropy(projected_z_hubert_1, target_units_hubert.type(torch.int64).to(recons.device))
+        unit_loss_hubert_2 = F.cross_entropy(projected_z_hubert_2, target_units_hubert.type(torch.int64).to(recons.device))
         unit_loss_hubert = unit_loss_hubert_1 + unit_loss_hubert_2
 
     if state.warmed_up:

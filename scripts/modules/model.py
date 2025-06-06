@@ -12,7 +12,7 @@ from .encoder import SpeakerEncoder, Encoder
 from .pqmf import CachedPQMF as PQMF
 from .attention import DiTBlock
 
-from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
+from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ, FormantShiftAug
 from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_loudness, extract_rms, mask_raw_audio_tensor, buffered_arange, is_xla_tensor
 
 class CrossEntropyProjectionHuBERT(nn.Module):
@@ -90,13 +90,14 @@ class VoiceModel(BaseModel):
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
         parametric_eq = SloppyPEQ(sample_rate=self.sample_rate, gain_range=[-15.0, 15.0])
+        formant_shift = FormantShiftAug(sample_rate=self.sample_rate)
 
-        transforms = {"shift": shift_pitch, "peq": parametric_eq, "noise": add_noise}
-        probabilities = {"shift": 0.5, "peq": 0.5, "noise": 0.5}
+        transforms = {"formant": formant_shift, "shift": shift_pitch, "peq": parametric_eq, "noise": add_noise}
+        probabilities = {"formant": 1.0, "shift": 1.0, "peq": 0.5, "noise": 0.5}
 
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
         
-        self.n_negatives = 100
+        self.n_negatives = 50
         self.cross_sample_negatives = 0
 
     def load_speaker_statedict(self, path):
@@ -234,7 +235,6 @@ class VoiceModel(BaseModel):
 
         negs_1, _ = self.sample_negatives(za_1, za_1.size(1))
         negs_2, _ = self.sample_negatives(za_2, za_1.size(1))
-
         zctr_1 = self.compute_sim(za_1, za_2, negs_1)
         zctr_2 = self.compute_sim(za_2, za_1, negs_2)
 
@@ -251,6 +251,9 @@ class VoiceModel(BaseModel):
 
         z1 = self.encoder(audio_aug1)
         z2 = self.encoder(audio_aug2)
+
+        z1 = z1.detach()
+        z2 = z2.detach()
 
         # --- resample for speaker
         audio_resampled = resample(audio_data, self.sample_rate, 44100)
@@ -269,11 +272,10 @@ class VoiceModel(BaseModel):
         loudness = (10 ** (loudness / 20))
 
         # --- decode
-       
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z1.shape[-1])
 
-        z_cat = torch.cat((z1.detach(), emb), dim=1)
+        z_cat = torch.cat((z1, emb), dim=1)
 
         y, nsf_source = self.decoder(z_cat,
                                      f0.unsqueeze(1),
@@ -288,7 +290,8 @@ class VoiceModel(BaseModel):
             "audio": y[..., :length],
             "projected_z_hubert_1": projected_z_hubert_1,
             "projected_z_hubert_2": projected_z_hubert_2,
-            "p_audio": audio_aug1.unsqueeze(1),
+            "p_audio_1": audio_aug1,
+            "p_audio_2": audio_aug2,
             "logits_ctr": logits_ctr,
             "target_ctr": target_ctr,
         }
