@@ -10,21 +10,22 @@ from torchaudio.functional import resample
 from .decoder import Generator
 from .encoder import SpeakerEncoder, Encoder
 from .pqmf import CachedPQMF as PQMF
-from .attention import DiTBlock
 
 from .augmentations import ComposeTransforms, AddNoise, PitchAug, SloppyPEQ
 from .utils import get_f0_fcpe, extract_f0_mean_std, entropy, bins_to_frequency, extract_loudness, extract_rms
+from .utils import mask_raw_audio_tensor, downsampled_mask_from_time_mask, interpolate_mask
 
 class CrossEntropyProjectionHuBERT(nn.Module):
     def __init__(self, channels):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(128)
+        #self.layer_norm = torch.nn.LayerNorm(128)
         self.proj = nn.Conv1d(channels, 100, 1, bias=False)
         
-    def forward(self, x):
-        z_for_CE = self.layer_norm(x)
+    def forward(self, x, source_count, target_count):
+        #z_for_CE = self.layer_norm(x)
+        z_for_CE = torch.nn.functional.layer_norm(x, (x.shape[1], source_count))
         z_for_CE = self.proj(z_for_CE)
-        z_for_CE = F.interpolate(z_for_CE, 102)
+        z_for_CE = F.interpolate(z_for_CE, target_count)
         return z_for_CE
 
 class VoiceModel(BaseModel):
@@ -85,16 +86,18 @@ class VoiceModel(BaseModel):
         self.speaker_encoder.load_state_dict(spk_state)
         self.speaker_encoder.eval()
         
-        self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder)
+        self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder + 256)
 
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
         parametric_eq = SloppyPEQ(sample_rate=self.sample_rate, gain_range=[-15.0, 15.0])
 
         transforms = {"shift": shift_pitch, "peq": parametric_eq, "noise": add_noise}
-        probabilities = {"shift": 0.5, "peq": 0.5, "noise": 0.5}
+        probabilities = {"shift": 1.0, "peq": 1.0, "noise": 0.5}
 
         self.transforms = ComposeTransforms(transforms=transforms, probs=probabilities)
+
+        self.downsample_factor = downsampling_rate
 
     def load_speaker_statedict(self, path):
         loaded_state = torch.load(path, map_location="cuda")
@@ -142,12 +145,25 @@ class VoiceModel(BaseModel):
         audio_aug = self.transforms({'audio': audio_data.squeeze(1)})['audio']
         audio_aug = audio_aug.unsqueeze(1)
         
-        z = self.encoder(audio_aug)
+        z_aug = self.encoder(audio_aug)
+        z_non_aug = self.encoder(audio_data)
+
+        # -------- mask ---------
+        masked_audio, time_mask = mask_raw_audio_tensor(audio_data, sample_rate=self.sample_rate)
+        frame_mask = downsampled_mask_from_time_mask(time_mask, downsample_factor=self.downsample_factor)
+        target_mask = interpolate_mask(frame_mask, 102)
+
+        source_true_count = frame_mask[0].sum().item()
+        target_true_count = target_mask[0].sum().item()
+
+        z_masked = self.encoder(masked_audio)
+        z_masked = z_masked.permute(0, 2, 1)[frame_mask].reshape(-1, 64, source_true_count)
        
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z.shape[-1])
+        source_emb = emb.repeat(1, 1, z_non_aug.shape[-1])
 
-        z_cat = torch.cat((z.detach(), emb), dim=1)
+        z_aug = z_aug.detach()
+        z_cat = torch.cat((z_non_aug.detach(), source_emb), dim=1)
 
         y_multiband, nsf_source = self.decoder(z_cat,
                                                f0.unsqueeze(1),
@@ -156,14 +172,20 @@ class VoiceModel(BaseModel):
         
         y = y_multiband
 
-        projected_z_hubert = self.ce_projection_hubert(z)
+        projected_z_hubert = self.ce_projection_hubert(torch.cat((z_masked, emb.repeat(1, 1, z_masked.shape[-1])), dim=1),
+                                                       source_true_count,
+                                                       target_true_count)
         
         return {
             "audio": y[..., :length],
             "projected_z_hubert": projected_z_hubert,
-            "p_audio": audio_aug.unsqueeze(1),
+            "z_non_aug": z_non_aug,
+            "z_aug": z_aug,
             "x_multiband": audio_multiband,
             "y_multiband": y_multiband,
+            "z_masked": z_masked,
+            "target_mask": target_mask,
+            "target_true_count": target_true_count
         }
 
     def get_val_audio(self, audio_data: torch.Tensor):

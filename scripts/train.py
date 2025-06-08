@@ -28,6 +28,7 @@ import wandb
 from einops import rearrange
 from torchaudio.functional import resample
 import pickle
+import torch.nn.functional as F
 from utils.custom_dataset import CustomAudioDataset
 
 ml.BaseModel.INTERN += ["modules.discriminator"]
@@ -283,6 +284,39 @@ def get_units(batch):
     
     return target_units_hubert
 
+
+def l_info_nce(C, C_aug, tau=0.1):
+    """
+    Computes infoNCE loss between clean and augmented embeddings
+    using F.cross_entropy.
+
+    C:      [B, T, D] tensor (clean embeddings)
+    C_aug:  [B, T, D] tensor (augmented embeddings)
+    tau:    temperature parameter
+    """
+    
+    B, T, D = C.shape
+
+    # Normalize embeddings
+    C = F.normalize(C, dim=-1)          # [B, T, D]
+    C_aug = F.normalize(C_aug, dim=-1)  # [B, T, D]
+
+    # Flatten time and batch: [B*T, D]
+    C = C.reshape(B * T, D)
+    C_aug = C_aug.reshape(B * T, D)
+
+    # Compute similarity matrix: [B*T, B*T]
+    logits = torch.matmul(C, C_aug.T) / tau  # each row: similarities to all others
+
+    # Positive pairs are along the diagonal
+    targets = torch.arange(B * T, device=C.device)
+
+    # Cross-entropy between each row of logits and its correct (diagonal) match
+    loss = F.cross_entropy(logits, targets)
+
+    return loss
+
+
 @timer()
 def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
     state.generator.train()
@@ -300,10 +334,19 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
+
+        z_non_aug = out["z_non_aug"].transpose(2,1)
+        z_aug = out["z_aug"].transpose(2,1)
+        ctr_content_loss = l_info_nce(z_non_aug, z_aug)
+
+        z_masked = out["z_masked"]
+        target_mask = out["target_mask"]
+        target_true_count = out["target_true_count"]
+
+        target_units_hubert_masked = target_units_hubert[target_mask].reshape(-1, target_true_count)
         
         projected_z_hubert = out["projected_z_hubert"]
-
-        unit_loss_hubert = torch.nn.functional.cross_entropy(projected_z_hubert, target_units_hubert.type(torch.int64).to(recons.device))
+        unit_loss_hubert = torch.nn.functional.cross_entropy(projected_z_hubert, target_units_hubert_masked.type(torch.int64).to(recons.device))
 
     if state.warmed_up:
         with accel.autocast():
@@ -324,6 +367,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         output["gen/mel"] = state.mel_loss(recons, signal)
         output["gen/waveform"] = state.waveform_loss(recons, signal)
         output["gen/unit_hubert"] = unit_loss_hubert
+        output["gen/ctr_loss"] = ctr_content_loss
         if state.warmed_up:
            (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
         output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
@@ -458,6 +502,7 @@ def train(
           "gen/multiband": 3.0,
           "gen/unit_hubert": 1.0,
           "gen/unit_wavlm": 1.0,
+          "gen/ctr_loss": 1.0,
           "adv/feat_loss": 2.0,
           "adv/gen_loss": 1.0,
     },

@@ -121,3 +121,47 @@ def extract_rms(signal: torch.Tensor, frame_size: int, hop_size: Optional[int] =
         return rms_values.transpose(2,1)
     else:
         return rms_values
+
+
+def mask_raw_audio_tensor(audio, sample_rate=16000, min_mask_ms=50, max_mask_ms=250, mask_prob=0.5, mask_value=0.0):
+    B, _, T = audio.shape
+    audio = audio.clone()
+    time_mask = torch.zeros(B, T, dtype=torch.bool)
+
+    total_audio_ms = (T / sample_rate) * 1000
+    estimated_mask_count = int((total_audio_ms / ((min_mask_ms + max_mask_ms) / 2)) * mask_prob)
+
+    for _ in range(estimated_mask_count):
+        mask_ms = torch.randint(min_mask_ms, max_mask_ms + 1, (1,)).item()
+        mask_len = int(sample_rate * mask_ms / 1000.0)
+        if mask_len >= T:
+            continue
+        start = torch.randint(0, T - mask_len + 1, (1,)).item()
+        audio[:, 0, start:start + mask_len] = mask_value
+        time_mask[:, start:start + mask_len] = True
+
+    return audio, time_mask
+
+
+def downsampled_mask_from_time_mask(time_mask, downsample_factor=256):
+    B, T = time_mask.shape
+    pad_len = (downsample_factor - (T % downsample_factor)) % downsample_factor
+    if pad_len > 0:
+        time_mask = F.pad(time_mask.float(), (0, pad_len), value=0.0)
+    else:
+        time_mask = time_mask.float()
+
+    time_mask = time_mask.unsqueeze(1)  # [B, 1, T]
+    pooled = F.avg_pool1d(time_mask, kernel_size=downsample_factor, stride=downsample_factor)
+    frame_mask = (pooled > 0).squeeze(1)  # [B, T//downsample_factor], bool
+
+    return frame_mask
+
+
+def interpolate_mask(mask, target_length):
+    B, T = mask.shape
+    mask_float = mask.float().unsqueeze(1)  # [B, 1, T]
+    interpolated = F.interpolate(mask_float, size=target_length, mode='linear', align_corners=False)
+    new_mask = interpolated.squeeze(1) > 0.0  # [B, target_length]
+    return new_mask
+
