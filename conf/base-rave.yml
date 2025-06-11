@@ -1,8 +1,5 @@
-# Model setup
-RAVE.sample_rate: 44100
-
 # Discriminator
-Discriminator.sample_rate: 44100
+Discriminator.sample_rate: 16000
 Discriminator.rates: []
 Discriminator.periods: [2, 3, 5, 7, 11]
 Discriminator.fft_sizes: [2048, 1024, 512]
@@ -14,7 +11,7 @@ Discriminator.bands:
   - [0.75, 1.0]
 
 # Optimization
-AdamW.betas: [0.8, 0.99]
+AdamW_G.betas: [0.8, 0.99]
 
 generator/AdamW.lr:     0.0001
 discriminator/AdamW.lr: 0.0001
@@ -68,21 +65,21 @@ MelSpectrogramLoss.mag_weight: 0.0
 batch_size: 2 #overwritten in gpu yml
 
 train/AudioDataset.n_examples: 160742 #10000000
-train/build_dataset.duration: 1.486078 #2.972155 #0.3715193
+train/build_dataset.duration: 2.048 #2.972155 #0.3715193
 train/build_dataset.folders:
   music_hq:
     - VCTK-Corpus/wav48
 
 val/build_transform.augment_prob: 1.0
 val/AudioDataset.n_examples: 500
-val/build_dataset.duration: 1.486078 #2.972155 #0.3715193
+val/build_dataset.duration: 2.048 #2.972155 #0.3715193
 val/build_dataset.folders:
   music_hq:
     - validation-set
 
 test/build_transform.augment_prob: 1.0
 test/AudioDataset.n_examples: 1000
-test/build_dataset.duration: 1.486078 #2.972155 #0.3715193
+test/build_dataset.duration: 2.048 #2.972155 #0.3715193
 #test/build_dataset.folders:
 #  music_hq:
 #   - ../musical_instrument_embedding/nsynth-test
