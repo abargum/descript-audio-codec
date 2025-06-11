@@ -34,7 +34,7 @@ from utils.custom_dataset import CustomAudioDataset
 ml.BaseModel.INTERN += ["modules.discriminator"]
 ml.BaseModel.EXTERN += ["einops"]
 
-file_path = 'metadata_16.pkl'
+file_path = 'metadata_16_output.pkl'
 with open(file_path, 'rb') as file:
     unit_dict = pickle.load(file)
 
@@ -185,7 +185,7 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection_hubert.parameters())
+        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.embedding_projection.parameters())
         optimizer_g = AdamW(params_to_update, use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
         
@@ -272,6 +272,7 @@ def get_units(batch):
     
     unit_length = 102 #(t / sr * 16000) // 320
     target_units_hubert = torch.zeros(b, unit_length)
+    target_embedding = torch.zeros(b, unit_length, 768)
 
     for i, p in enumerate(batch["path"]):
         offset = batch["signal"].metadata["offset"][i]
@@ -281,9 +282,13 @@ def get_units(batch):
         
         unit_hubert = unit_hubert[start:start+unit_length].unsqueeze(0)
         target_units_hubert[i, :] = unit_hubert
-    
-    return target_units_hubert
 
+        embedding_hubert = unit_dict[p]['outputs']
+        
+        embedding_hubert = torch.tensor(embedding_hubert[start:start+unit_length, :]).unsqueeze(0)
+        target_embedding[i, :, :] = embedding_hubert        
+    
+    return target_units_hubert, target_embedding
 
 def l_info_nce(C, C_aug, tau=0.1):
     """
@@ -329,24 +334,16 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
             batch["signal"].clone(), **batch["transform_args"]
         )
 
-        target_units_hubert = get_units(batch)
+        target_units_hubert, target_embedding = get_units(batch)
 
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
-
-        z_non_aug = out["z_non_aug"].transpose(2,1)
-        z_aug = out["z_aug"].transpose(2,1)
-        ctr_content_loss = l_info_nce(z_non_aug, z_aug)
-
-        z_masked = out["z_masked"]
-        target_mask = out["target_mask"]
-        target_true_count = out["target_true_count"]
-
-        target_units_hubert_masked = target_units_hubert[target_mask].reshape(-1, target_true_count)
         
-        projected_z_hubert = out["projected_z_hubert"]
-        unit_loss_hubert = torch.nn.functional.cross_entropy(projected_z_hubert, target_units_hubert_masked.type(torch.int64).to(recons.device))
+        projected_z = F.interpolate(out["projected_z"], 102).transpose(2,1)
+        z_loss = l_info_nce(target_embedding.to(projected_z), projected_z)
+        
+        #unit_loss_hubert = torch.nn.functional.cross_entropy(projected_z_hubert, target_units_hubert_masked.type(torch.int64).to(recons.device))
 
     if state.warmed_up:
         with accel.autocast():
@@ -366,8 +363,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         output["gen/stft"] = state.stft_loss(recons, signal)
         output["gen/mel"] = state.mel_loss(recons, signal)
         output["gen/waveform"] = state.waveform_loss(recons, signal)
-        output["gen/unit_hubert"] = unit_loss_hubert
-        output["gen/ctr_loss"] = ctr_content_loss
+        output["gen/z_loss"] = z_loss
         if state.warmed_up:
            (output["adv/gen_loss"], output["adv/feat_loss"]) = state.gan_loss.generator_loss(recons, signal)
         output["gen/total_loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
@@ -500,9 +496,7 @@ def train(
     lambdas: dict = {
           "gen/mel": 12.0,
           "gen/multiband": 3.0,
-          "gen/unit_hubert": 1.0,
-          "gen/unit_wavlm": 1.0,
-          "gen/ctr_loss": 1.0,
+          "gen/z_loss": 1.0,
           "adv/feat_loss": 2.0,
           "adv/gen_loss": 1.0,
     },
