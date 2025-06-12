@@ -22,6 +22,9 @@ sys.path.insert(0, root_dir)
 
 from modules.model import VoiceModel
 
+discrete_units = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True).to(torch.device("cpu"))
+discrete_units.eval()
+
 def get_random_files(folder_path, x=10):
     """
     Select x random audio files from each speaker's folder.
@@ -117,6 +120,7 @@ def extract_content_emb_mean(files, encoder):
     """
     embeddings = []
     labels = []
+    huberts = []
     
     for file in tqdm(files, desc="Processing Content Embeddings (Mean)"):
         speaker_id = file.split('/')[-2]
@@ -132,16 +136,20 @@ def extract_content_emb_mean(files, encoder):
             
             emb_audio = torch.tensor(audio).unsqueeze(0).unsqueeze(0).float()
             z = encoder(emb_audio)
+
+            units = discrete_units.units(emb_audio)
+            units = units.detach().cpu()
             
             # Get mean embedding across time dimension
             emb = torch.mean(z, dim=2)
             embeddings.append(emb.detach().cpu().numpy().flatten())
+            huberts.append(units.numpy().flatten())
             labels.append(speaker_id)
             
         except Exception as e:
             print(f"Error processing content file {file}: {e}")
     
-    return np.array(embeddings), labels
+    return np.array(embeddings), labels, np.array(huberts)
 
 def plot_tsne(embeddings, labels, ax, title):
     """
@@ -227,10 +235,12 @@ def main():
     
     # Process specific test phrases (if they exist)
     test_phrases = [
-        "../vctk-small/p225/p225_003_mic1.flac",
-        "../vctk-small/p226/p226_003_mic1.flac",
-        "../vctk-small/p227/p227_003_mic1.flac",
-        "../vctk-small/p228/p228_003_mic1.flac"
+        "vctk-small/p225/p225_003.wav",
+        "vctk-small/p226/p226_003.wav",
+        "vctk-small/p227/p227_003.wav",
+        "vctk-small/p228/p228_003.wav",
+        "vctk-small/p229/p229_003.wav",
+        "vctk-small/p230/p230_003.wav"
     ]
     
     # Filter existing test phrases
@@ -243,14 +253,14 @@ def main():
     # Extract all embeddings
     speaker_embeddings, speaker_labels = extract_speaker_emb(speaker_files, speaker_encoder, pqmf)
     content_frames, content_frame_labels = extract_content_emb_frames(existing_phrases, encoder)
-    content_mean, content_mean_labels = extract_content_emb_mean(all_files, encoder)
+    content_mean, content_mean_labels, huberts = extract_content_emb_mean(all_files, encoder)
     
     print(f"Speaker embeddings: {speaker_embeddings.shape}")
     print(f"Content frames: {content_frames.shape}")
     print(f"Content mean: {content_mean.shape}")
     
     # Create subplot visualization - 3 plots side by side
-    fig, axes = plt.subplots(1, 3, figsize=(24, 8))
+    fig, axes = plt.subplots(1, 4, figsize=(32, 8))
     fig.suptitle(f'Voice Model Analysis: {model_name}', fontsize=16, fontweight='bold')
     
     # Plot three analyses side by side
@@ -262,6 +272,9 @@ def main():
     
     plot_tsne(content_mean, content_mean_labels, axes[2], 
               'Content Embeddings - Mean Level (All Files)')
+
+    plot_tsne(huberts, content_mean_labels, axes[3], 
+              'HuBERT Embeddings (All Files)')
     
     plt.tight_layout()
     
