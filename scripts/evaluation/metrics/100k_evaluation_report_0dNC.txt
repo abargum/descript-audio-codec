@@ -1,0 +1,64 @@
+=== VOICE MODEL EVALUATION REPORT: 100k ===
+Evaluation date: 2025-06-12 10:50:22
+Model path: runs/test_comb/100k
+Data path: audio/test
+Target speakers: p227, p228
+Device used: cuda
+Random seed: 42
+
+=== VOICE SIMILARITY METRICS ===
+
+Speaker: p227
+Average similarity score: 0.7001
+
+Speaker: p228
+Average similarity score: 0.7492
+
+
+=== DNSMOS METRICS ===
+
+Speaker: p227
+BAK (background quality): 2.9416
+SIG (signal quality): 3.2578
+OVRL (overall quality): 3.7165
+
+Speaker: p228
+BAK (background quality): 3.1818
+SIG (signal quality): 3.1852
+OVRL (overall quality): 3.7333
+
+
+=== WORD ERROR RATE (WER) AND CHARACTER ERROR RATE (CER) METRICS ===
+
+Speaker: p227
+Mean WER: 0.0667
+Mean CER: 0.0406
+Corpus WER: 0.1081
+Corpus CER: 0.0674
+Min WER: 0.0000
+Max WER: 0.1333
+Min CER: 0.0000
+Max CER: 0.0813
+Files evaluated: 2
+
+Speaker: p228
+Mean WER: 0.1000
+Mean CER: 0.0469
+Corpus WER: 0.1622
+Corpus CER: 0.0777
+Min WER: 0.0000
+Max WER: 0.2000
+Min CER: 0.0000
+Max CER: 0.0938
+Files evaluated: 2
+
+
+=== OVERALL METRICS SUMMARY ===
+Overall Average Voice Similarity: 0.7246
+Overall Average DNSMOS BAK: 3.0617
+Overall Average DNSMOS SIG: 3.2215
+Overall Average DNSMOS OVRL: 3.7249
+Overall Average WER: 0.0833
+Overall Average CER: 0.0437
+
+=== END OF EVALUATION REPORT ===

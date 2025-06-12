@@ -1,0 +1,13 @@
+=== VOICE MODEL EVALUATION REPORT: multi ===
+Evaluation date: 2025-05-29 11:56:21
+Model path: pretrained/ablation-units/multi
+Data path: libri-test
+Target speakers: p228
+Device used: cuda
+Random seed: 42
+
+
+
+=== OVERALL METRICS SUMMARY ===
+
+=== END OF EVALUATION REPORT ===

@@ -1,0 +1,59 @@
+=== VOICE MODEL EVALUATION REPORT: 100k ===
+Evaluation date: 2025-06-12 09:37:05
+Model path: runs/test_16/100k
+Data path: libri-dev-set
+Target speakers: p228
+Device used: cuda
+Random seed: 42
+
+=== VOICE SIMILARITY METRICS ===
+
+Speaker: p228
+Average similarity score: 0.8169
+
+Top 3 most similar files:
+1. 3000_15664_000002_000005.wav: 0.8828
+2. 3000_15664_000007_000002.wav: 0.8736
+3. 3000_15664_000007_000000.wav: 0.8673
+
+Bottom 3 least similar files:
+1. 1272_128104_000003_000000.wav: 0.7708
+2. 5338_284437_000002_000000.wav: 0.7532
+3. 5338_284437_000008_000000.wav: 0.6694
+
+
+=== DNSMOS METRICS ===
+
+Speaker: p228
+BAK (background quality): 3.2386
+SIG (signal quality): 3.5180
+OVRL (overall quality): 3.7978
+
+
+=== WORD ERROR RATE (WER) AND CHARACTER ERROR RATE (CER) METRICS ===
+
+Speaker: p228
+Mean WER: 0.1728
+Mean CER: 0.1088
+Min WER: 0.0000
+Max WER: 1.0000
+Min CER: 0.0000
+Max CER: 0.8333
+Files evaluated: 36
+
+Overall Mean WER across all speakers: 0.1728
+Overall Mean CER across all speakers: 0.1088
+
+Speaker Ranking (by Mean WER):
+1. p228: WER=0.1728, CER=0.1088 (Files: 36)
+
+
+=== OVERALL METRICS SUMMARY ===
+Overall Average Voice Similarity: 0.8169
+Overall Average DNSMOS BAK: 3.2386
+Overall Average DNSMOS SIG: 3.5180
+Overall Average DNSMOS OVRL: 3.7978
+Overall Average WER: 0.1728
+Overall Average CER: 0.1088
+
+=== END OF EVALUATION REPORT ===

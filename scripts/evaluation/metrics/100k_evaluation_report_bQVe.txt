@@ -1,0 +1,13 @@
+=== VOICE MODEL EVALUATION REPORT: 100k ===
+Evaluation date: 2025-05-23 10:50:46
+Model path: runs/test_timbre_attention/100k
+Data path: libri-test
+Target speakers: p228
+Device used: cuda
+Random seed: 42
+
+
+
+=== OVERALL METRICS SUMMARY ===
+
+=== END OF EVALUATION REPORT ===

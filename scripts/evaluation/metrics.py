@@ -29,7 +29,7 @@ def setup_argument_parser():
                        help='Device to run the model on (cuda or cpu)')
     parser.add_argument('--seed', type=int, default=42, 
                        help='Random seed for reproducibility')
-    parser.add_argument('--targets', nargs='+', default=['p228'],
+    parser.add_argument('--targets', nargs='+', default=['p227', 'p228'],
                        help='List of target speakers')
     return parser
 

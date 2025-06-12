@@ -1,0 +1,87 @@
+=== VOICE MODEL EVALUATION REPORT: 400k ===
+Evaluation date: 2025-06-11 10:57:56
+Model path: runs/test_16/400k
+Data path: libri-dev-set
+Target speakers: p227, p228
+Device used: cuda
+Random seed: 42
+
+=== VOICE SIMILARITY METRICS ===
+
+Speaker: p227
+Average similarity score: 0.8491
+
+Top 3 most similar files:
+1. 3000_15664_000007_000002.wav: 0.9070
+2. 84_121550_000032_000000.wav: 0.9056
+3. 3000_15664_000002_000005.wav: 0.9011
+
+Bottom 3 least similar files:
+1. 1272_128104_000001_000000.wav: 0.7410
+2. 5338_284437_000002_000000.wav: 0.7177
+3. 5338_284437_000008_000000.wav: 0.6227
+
+Speaker: p228
+Average similarity score: 0.8393
+
+Top 3 most similar files:
+1. 3000_15664_000007_000002.wav: 0.8977
+2. 3000_15664_000002_000005.wav: 0.8909
+3. 3000_15664_000002_000002.wav: 0.8836
+
+Bottom 3 least similar files:
+1. 5338_284437_000002_000000.wav: 0.7839
+2. 1272_128104_000001_000000.wav: 0.7767
+3. 5338_284437_000008_000000.wav: 0.6095
+
+
+=== DNSMOS METRICS ===
+
+Speaker: p227
+BAK (background quality): 3.5213
+SIG (signal quality): 3.8217
+OVRL (overall quality): 4.0490
+
+Speaker: p228
+BAK (background quality): 3.3558
+SIG (signal quality): 3.7492
+OVRL (overall quality): 3.7878
+
+
+=== WORD ERROR RATE (WER) AND CHARACTER ERROR RATE (CER) METRICS ===
+
+Speaker: p227
+Mean WER: 0.1329
+Mean CER: 0.0776
+Min WER: 0.0000
+Max WER: 1.0000
+Min CER: 0.0000
+Max CER: 0.5000
+Files evaluated: 36
+
+Speaker: p228
+Mean WER: 0.0859
+Mean CER: 0.0493
+Min WER: 0.0000
+Max WER: 0.7143
+Min CER: 0.0000
+Max CER: 0.3889
+Files evaluated: 36
+
+Overall Mean WER across all speakers: 0.1094
+Overall Mean CER across all speakers: 0.0634
+
+Speaker Ranking (by Mean WER):
+1. p228: WER=0.0859, CER=0.0493 (Files: 36)
+2. p227: WER=0.1329, CER=0.0776 (Files: 36)
+
+
+=== OVERALL METRICS SUMMARY ===
+Overall Average Voice Similarity: 0.8442
+Overall Average DNSMOS BAK: 3.4385
+Overall Average DNSMOS SIG: 3.7854
+Overall Average DNSMOS OVRL: 3.9184
+Overall Average WER: 0.1094
+Overall Average CER: 0.0634
+
+=== END OF EVALUATION REPORT ===

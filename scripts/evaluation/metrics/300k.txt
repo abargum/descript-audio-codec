@@ -1,0 +1,74 @@
+=== Voice Model Evaluation Metrics: 300k ===
+Evaluation date: 2025-05-20 15:38:03
+Model path: 300k
+
+=== VOICE SIMILARITY METRICS ===
+
+Speaker: p227
+Average similarity score: 0.8366
+
+Top 3 most similar files:
+1. 1272_128104_000003_000005.wav: 0.8954
+2. 3000_15664_000002_000005.wav: 0.8856
+3. 3000_15664_000002_000000.wav: 0.8776
+
+Bottom 3 least similar files:
+1. 5338_284437_000002_000000.wav: 0.7839
+2. 3000_15664_000007_000000.wav: 0.7395
+3. 5338_284437_000008_000000.wav: 0.6318
+
+Speaker: p228
+Average similarity score: 0.8468
+
+Top 3 most similar files:
+1. 5338_284437_000004_000000.wav: 0.8902
+2. 84_121550_000032_000000.wav: 0.8869
+3. 5338_284437_000005_000001.wav: 0.8863
+
+Bottom 3 least similar files:
+1. 1272_128104_000001_000000.wav: 0.7956
+2. 3000_15664_000007_000000.wav: 0.7827
+3. 5338_284437_000008_000000.wav: 0.6414
+
+Overall average similarity across all speakers: 0.8417
+
+
+=== DNSMOS METRICS ===
+
+Speaker: p227
+BAK (background quality): 3.4648
+SIG (signal quality): 3.6644
+OVRL (overall quality): 3.9213
+
+Speaker: p228
+BAK (background quality): 3.3424
+SIG (signal quality): 3.6591
+OVRL (overall quality): 3.7825
+
+Overall Average DNSMOS Scores:
+Average BAK: 3.4036
+Average SIG: 3.6618
+Average OVRL: 3.8519
+
+
+=== WORD ERROR RATE (WER) METRICS ===
+
+Speaker: p227
+Mean WER: 0.3055
+Min WER: 0.0000
+Max WER: 1.4000
+Files evaluated: 37
+
+Speaker: p228
+Mean WER: 0.3217
+Min WER: 0.0000
+Max WER: 1.5000
+Files evaluated: 37
+
+Overall Mean WER across all speakers: 0.3136
+
+Speaker Ranking (by Mean WER):
+1. p227: 0.3055 (Files: 37)
+2. p228: 0.3217 (Files: 37)
+
+=== END OF METRICS REPORT ===

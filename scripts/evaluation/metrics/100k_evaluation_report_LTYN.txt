@@ -1,0 +1,57 @@
+=== VOICE MODEL EVALUATION REPORT: 100k ===
+Evaluation date: 2025-06-12 10:44:21
+Model path: runs/test_comb/100k
+Data path: audio/test
+Target speakers: p228
+Device used: cuda
+Random seed: 42
+
+=== VOICE SIMILARITY METRICS ===
+
+Speaker: p228
+Average similarity score: 0.7541
+
+
+=== DNSMOS METRICS ===
+
+Speaker: p228
+BAK (background quality): 3.1280
+SIG (signal quality): 3.1664
+OVRL (overall quality): 3.6701
+
+
+=== WORD ERROR RATE (WER) AND CHARACTER ERROR RATE (CER) METRICS ===
+
+Speaker: p228
+Mean WER: 0.1500
+Mean CER: 0.0688
+Corpus WER: 0.2432
+Corpus CER: 0.1140
+Min WER: 0.0000
+Max WER: 0.3000
+Min CER: 0.0000
+Max CER: 0.1375
+Files evaluated: 2
+
+Overall Mean WER across all speakers: 0.1500
+Overall Mean CER across all speakers: 0.0688
+
+Speaker Ranking (by Mean WER):
+1. p228: WER=0.1500, CER=0.0688 (Files: 2)
+
+Overall Corpus WER across all speakers: 0.2432
+Overall Corpus CER across all speakers: 0.1140
+
+Speaker Ranking (by Corpus WER):
+1. p228: C-WER=0.2432, C-CER=0.1140 (Files: 2)
+
+
+=== OVERALL METRICS SUMMARY ===
+Overall Average Voice Similarity: 0.7541
+Overall Average DNSMOS BAK: 3.1280
+Overall Average DNSMOS SIG: 3.1664
+Overall Average DNSMOS OVRL: 3.6701
+Overall Average WER: 0.1500
+Overall Average CER: 0.0688
+
+=== END OF EVALUATION REPORT ===
