@@ -95,7 +95,7 @@ def process_single_audio_file(audio_path, target, embeddings, means, stds,
         os.makedirs(os.path.dirname(processed_audio_path_44), exist_ok=True)
         
         # Load and process audio
-        y, sr = librosa.load(audio_path, sr=44100)
+        y, sr = librosa.load(audio_path, sr=16000)
         y = librosa.util.normalize(y, axis=-1)
         
         # Check if audio is too short or empty
@@ -105,12 +105,9 @@ def process_single_audio_file(audio_path, target, embeddings, means, stds,
         
         y_adj = adjust_audio_length(y, sr, min_power=min_power, mode=mode)
         
-        # Resample to 16kHz for processing
-        y_16k = librosa.resample(y_adj.astype(np.float32), orig_sr=sr, target_sr=16000)
 
-        # Save resampled input
         output_audio_path = output_audio_path.replace(".flac", ".wav")
-        wavfile.write(output_audio_path, 16000, y_16k)
+        wavfile.write(output_audio_path, 16000, y_adj)
         
         # Process with model
         audio_tensor = torch.tensor(y_adj).unsqueeze(0).unsqueeze(0).to(device)
@@ -119,15 +116,15 @@ def process_single_audio_file(audio_path, target, embeddings, means, stds,
             processed = generator.evaluate(audio_tensor, embeddings, means, stds)
 
         # Save processed 44.1 kHz version
+        
         processed_np = processed.squeeze().cpu().numpy()
+        processed_np_44k = librosa.resample(processed_np.astype(np.float32), orig_sr=16000, target_sr=44100)
+        
         processed_audio_path_44 = processed_audio_path_44.replace(".flac", ".wav")
-        wavfile.write(processed_audio_path_44, 44100, processed_np.astype(np.float32))
+        wavfile.write(processed_audio_path_44, 44100, processed_np_44k.astype(np.float32))
 
-        # Save processed 16kHz version
-        processed_np_16k = librosa.resample(processed_np.astype(np.float32), 
-                                          orig_sr=44100, target_sr=16000)
         processed_audio_path = processed_audio_path.replace(".flac", ".wav")
-        wavfile.write(processed_audio_path, 16000, processed_np_16k.astype(np.float32))
+        wavfile.write(processed_audio_path, 16000, processed_np.astype(np.float32))
         
         return rel_path
         

@@ -185,7 +185,7 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.embedding_projection.parameters())
+        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.embedding_projection.parameters()) + list(generator.ce_projection_hubert.parameters())
         optimizer_g = AdamW(params_to_update, use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
         
@@ -342,8 +342,16 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         
         projected_z = F.interpolate(out["projected_z"], 102).transpose(2,1)
         z_loss = l_info_nce(target_embedding.to(projected_z), projected_z)
-        
-        #unit_loss_hubert = torch.nn.functional.cross_entropy(projected_z_hubert, target_units_hubert_masked.type(torch.int64).to(recons.device))
+
+        projected_z_hubert = out["projected_z_hubert"]
+        unit_loss_hubert = torch.nn.functional.cross_entropy(projected_z_hubert, target_units_hubert.type(torch.int64).to(recons.device))
+
+        z_aug = out["z_aug"].transpose(2,1)
+        z_masked = out["z_masked"].transpose(2,1)
+
+        intra_loss = l_info_nce(z_aug, z_masked)
+
+        z_loss = z_loss + unit_loss_hubert + intra_loss
 
     if state.warmed_up:
         with accel.autocast():

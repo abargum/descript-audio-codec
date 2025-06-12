@@ -146,14 +146,16 @@ class VoiceModel(BaseModel):
         audio_aug = audio_aug.unsqueeze(1)
 
         # -------- mask ---------
-        masked_audio, _ = mask_raw_audio_tensor(audio_aug, sample_rate=self.sample_rate)
+        masked_audio, _ = mask_raw_audio_tensor(audio_data, sample_rate=self.sample_rate)
 
+        z_aug = self.encoder(audio_aug)
         z = self.encoder(masked_audio)
        
         emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
         emb = emb.repeat(1, 1, z.shape[-1])
 
         projected_z = self.embedding_projection(torch.cat((z, emb), dim=1))
+        projected_z_hubert = self.ce_projection_hubert(torch.cat((z, emb), dim=1))
 
         z_cat = torch.cat((z.detach(), emb), dim=1)
 
@@ -166,7 +168,10 @@ class VoiceModel(BaseModel):
         
         return {
             "audio": y[..., :length],
+            "z_aug": z_aug,
+            "z_masked": z,
             "projected_z": projected_z,
+            "projected_z_hubert": projected_z_hubert,
             "x_multiband": audio_multiband,
             "y_multiband": y_multiband
         }
