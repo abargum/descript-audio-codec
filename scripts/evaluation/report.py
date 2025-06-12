@@ -119,6 +119,12 @@ def write_overall_summary(f, overall_metrics):
     if 'overall_cer' in overall_metrics:
         f.write(f"Overall Average CER: {overall_metrics['overall_cer']:.4f}\n")
 
+    if 'corpus_wer' in overall_metrics:
+        f.write(f"Overall Corpus WER: {overall_metrics['corpus_wer']:.4f}\n")
+    
+    if 'corpus_cer' in overall_metrics:
+        f.write(f"Overall Corpus CER: {overall_metrics['corpus_cer']:.4f}\n")
+
 def save_metrics_to_file(args, similarity_results, dnsmos_results, wer_cer_results=None):
     """
     Save all metrics to a comprehensive text file.
