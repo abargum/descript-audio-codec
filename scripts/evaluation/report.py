@@ -42,11 +42,18 @@ def calculate_overall_metrics(similarity_results, dnsmos_results, wer_cer_result
     if wer_cer_results:
         all_wers = [data['mean_wer'] for data in wer_cer_results.values()]
         all_cers = [data['mean_cer'] for data in wer_cer_results.values()]
+
+        all_corpus_wers = [data['corpus_wer'] for data in wer_cer_results.values()]
+        all_corpus_cers = [data['corpus_cer'] for data in wer_cer_results.values()]
         
         if all_wers:
             overall_metrics['overall_wer'] = sum(all_wers) / len(all_wers)
         if all_cers:
             overall_metrics['overall_cer'] = sum(all_cers) / len(all_cers)
+        if all_corpus_wers:
+            overall_metrics['corpus_wer'] = sum(all_corpus_wers) / len(all_corpus_wers)
+        if all_corpus_cers:
+            overall_metrics['corpus_cer'] = sum(all_corpus_cers) / len(all_corpus_cers)
     
     return overall_metrics
 
@@ -86,24 +93,13 @@ def write_wer_cer_metrics(f, wer_cer_results):
         f.write(f"\nSpeaker: {speaker}\n")
         f.write(f"Mean WER: {data['mean_wer']:.4f}\n")
         f.write(f"Mean CER: {data['mean_cer']:.4f}\n")
+        f.write(f"Corpus WER: {data['corpus_wer']:.4f}\n")
+        f.write(f"Corpus CER: {data['corpus_cer']:.4f}\n")
         f.write(f"Min WER: {data['min_wer']:.4f}\n")
         f.write(f"Max WER: {data['max_wer']:.4f}\n")
         f.write(f"Min CER: {data['min_cer']:.4f}\n")
         f.write(f"Max CER: {data['max_cer']:.4f}\n")
         f.write(f"Files evaluated: {data['file_count']}\n")
-    
-    # Overall WER/CER averages and rankings
-    all_wers = [data['mean_wer'] for data in wer_cer_results.values()]
-    all_cers = [data['mean_cer'] for data in wer_cer_results.values()]
-    
-    if all_wers and all_cers:
-        f.write(f"\nOverall Mean WER across all speakers: {sum(all_wers)/len(all_wers):.4f}\n")
-        f.write(f"Overall Mean CER across all speakers: {sum(all_cers)/len(all_cers):.4f}\n")
-        
-        # Speaker ranking by WER
-        f.write("\nSpeaker Ranking (by Mean WER):\n")
-        for i, (speaker, data) in enumerate(sorted(wer_cer_results.items(), key=lambda x: x[1]['mean_wer'])):
-            f.write(f"{i+1}. {speaker}: WER={data['mean_wer']:.4f}, CER={data['mean_cer']:.4f} (Files: {data['file_count']})\n")
 
 def write_overall_summary(f, overall_metrics):
     """Write overall summary metrics to file."""
