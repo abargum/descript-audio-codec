@@ -11,10 +11,15 @@ from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 import librosa
 import numpy as np
+import sys
 
 torch.set_grad_enabled(False)
 
 import cached_conv as cc
+
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, root_dir)
+
 from modules.model import VoiceModel
 
 def get_random_files(folder_path, x=10):
