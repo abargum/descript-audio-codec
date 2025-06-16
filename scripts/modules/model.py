@@ -303,10 +303,21 @@ class VoiceModel(BaseModel):
         source_pitch = source_pitch * 1.0
         source_pitch[torch.isnan(source_pitch)] = 0
 
-        z_cat = torch.cat((z.detach(), emb), dim=1)
+        timbre_embedding = self.timbre_encoder(audio_data)
+        timbre_tokens = self.timbre_tokenizer(timbre_embedding,
+                                              timbre_embedding,
+                                              self.latent_query.repeat(timbre_embedding.shape[0], 1, 1))
+
+        timbre_queries = torch.cat((z, source_pitch.unsqueeze(1), periodicity.unsqueeze(1), loudness.unsqueeze(1), emb.to(z)), dim=1)
+
+        varying_speaker_emb = self.timbre_embedding(self.timbre_keys.repeat(timbre_embedding.shape[0], 1, 1),
+                                                    timbre_tokens,
+                                                    timbre_queries)
+
+        z_cat = torch.cat((z, emb.to(z), varying_speaker_emb.to(z)), dim=1)
 
         y_multiband, nsf_source = self.decoder(z_cat,
-                                               source_pitch.unsqueeze(1),
+                                               source_pitch.to(z),
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
 
@@ -349,15 +360,15 @@ class VoiceModel(BaseModel):
                                               timbre_embedding,
                                               self.latent_query.repeat(timbre_embedding.shape[0], 1, 1))
 
-        timbre_queries = torch.cat((z, source_pitch.unsqueeze(1), periodicity.unsqueeze(1), loudness.unsqueeze(1), emb), dim=1)
+        timbre_queries = torch.cat((z, source_pitch.unsqueeze(1), periodicity.unsqueeze(1), loudness.unsqueeze(1), emb.to(z)), dim=1)
 
         varying_speaker_emb = self.timbre_embedding(self.timbre_keys.repeat(timbre_embedding.shape[0], 1, 1),
                                                     timbre_tokens,
                                                     timbre_queries)
 
-        z_cat = torch.cat((z, emb, varying_speaker_emb), dim=1)
+        z_cat = torch.cat((z, emb.to(z), varying_speaker_emb.to(z)), dim=1)
 
-        y_multiband, nsf_source = self.decoder(z,
+        y_multiband, nsf_source = self.decoder(z_cat,
                                                source_pitch.to(z),
                                                periodicity.unsqueeze(1),
                                                loudness.unsqueeze(1))
