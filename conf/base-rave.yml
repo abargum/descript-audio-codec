@@ -1,8 +1,8 @@
 # Model setup
-RAVE.sample_rate: 44100
+RAVE.sample_rate: 16000
 
 # Discriminator
-Discriminator.sample_rate: 44100
+Discriminator.sample_rate: 16000
 Discriminator.rates: []
 Discriminator.periods: [2, 3, 5, 7, 11]
 Discriminator.fft_sizes: [2048, 1024, 512]
@@ -36,8 +36,7 @@ seed: 0
 lambdas:
   gen/mel: 12.0
   gen/multiband: 3.0
-  gen/unit_hubert: 1.0
-  gen/unit_wavlm: 1.0
+  gen/z_loss: 1.0
   adv/feat_loss: 2.0
   adv/gen_loss: 1.0
 
