@@ -283,7 +283,7 @@ def main():
     os.makedirs('plots', exist_ok=True)
     plot_filename = f'plots/voice_analysis_{model_name}.png'
     plt.savefig(plot_filename, bbox_inches='tight', dpi=100)
-    print(f"Analysis plot saved as {plot_filename}")
+    print(f"Analysis plot saved: {plot_filename}")
     
     plt.show()
 
