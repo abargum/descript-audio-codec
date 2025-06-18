@@ -258,6 +258,7 @@ def main():
     print(f"Speaker embeddings: {speaker_embeddings.shape}")
     print(f"Content frames: {content_frames.shape}")
     print(f"Content mean: {content_mean.shape}")
+    print(f"HuBERT: {huberts.shape}")
     
     # Create subplot visualization - 3 plots side by side
     fig, axes = plt.subplots(1, 4, figsize=(32, 8))
@@ -274,7 +275,7 @@ def main():
               'Content Embeddings - Mean Level (All Files)')
 
     plot_tsne(huberts, content_mean_labels, axes[3], 
-              'HuBERT Embeddings (All Files)')
+              'HuBERT Embeddings - Discrete Units (All Files)')
     
     plt.tight_layout()
     
