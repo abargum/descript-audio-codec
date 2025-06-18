@@ -22,7 +22,7 @@ def get_hubert_units(audio):
     output = output.squeeze().detach().cpu().numpy()
     units = kmean_hubert.predict(output)
     units = torch.tensor(units, dtype=torch.long)
-    return units.detach().cpu(), output
+    return units.detach().cpu()
 
 def get_features(file_path, sr):
     """Extract feature from audio file."""
@@ -37,9 +37,9 @@ def get_features(file_path, sr):
     #zero pad end with one second to ensure that the offset does not go out of range
     zeros = torch.zeros(1, sr).to(torch.device('cuda'))
     x = torch.cat((x, zeros), dim=-1)
-    hubert_units, outputs = get_hubert_units(x)
+    hubert_units = get_hubert_units(x)
         
-    return hubert_units, outputs
+    return hubert_units
 
 def process_audio_directory(base_dirs, output_path, sample_rate):
     """
@@ -67,11 +67,10 @@ def process_audio_directory(base_dirs, output_path, sample_rate):
                     print(f"Processing {file_path}...")
                     
                     try:
-                        hubert_units, outputs = get_features(file_path, sample_rate)
+                        hubert_units = get_features(file_path, sample_rate)
                         
                         audio_data[file_path] = {
-                            'hubert_units': hubert_units,
-                            'outputs': outputs
+                            'hubert_units': hubert_units
                         }   
                         
                     except Exception as e:
@@ -90,6 +89,6 @@ base_directories = [
     "validation-set",
 ]
 sample_rate = 16000
-output_file = "metadata_16_output.pkl"
+output_file = "metadata_16.pkl"
 
 process_audio_directory(base_directories, output_file, sample_rate)

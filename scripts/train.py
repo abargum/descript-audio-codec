@@ -34,7 +34,7 @@ from utils.custom_dataset import CustomAudioDataset
 ml.BaseModel.INTERN += ["modules.discriminator"]
 ml.BaseModel.EXTERN += ["einops"]
 
-file_path = 'metadata_16_output.pkl'
+file_path = 'metadata_16.pkl'
 with open(file_path, 'rb') as file:
     unit_dict = pickle.load(file)
 
@@ -185,7 +185,7 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection_hubert.parameters()) + list(generator.timbre_embedding.parameters()) + [generator.latent_query] + list(generator.timbre_tokenizer.parameters()) + [generator.timbre_keys] + list(generator.timbre_encoder.parameters())
+        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection_hubert.parameters())
         optimizer_g = AdamW(params_to_update, use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
         
@@ -340,7 +340,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         z_aug1 = out["z_aug1"].transpose(2,1)
         z_aug2 = out["z_aug2"].transpose(2,1)
 
-        ctr_loss = l_info_nce(z_aug1, z_aug2)
+        ctr_loss = l_info_nce(z_aug1, z_aug2) * 2.0
 
         z_loss = unit_loss_hubert + ctr_loss
 
