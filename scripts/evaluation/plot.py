@@ -12,6 +12,8 @@ from tqdm import tqdm
 import librosa
 import numpy as np
 import sys
+from transformers import HubertModel
+import torch
 
 torch.set_grad_enabled(False)
 
@@ -20,16 +22,13 @@ import cached_conv as cc
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, root_dir)
 
-from utils.create_kmeans import kmeans
 from modules.model import VoiceModel
-from transformers import Wav2Vec2FeatureExtractor, AutoModel, HubertConfig
 
-pretrained_path = "scripts/utils/kmeans_200_multi.pt"
-config = HubertConfig.from_pretrained("utter-project/mHuBERT-147", output_hidden_states=True)
-feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained("utter-project/mHuBERT-147")
-model_hubert = AutoModel.from_pretrained("utter-project/mHuBERT-147", config=config).to(torch.device("cpu"))
-model_hubert.eval()
-kmean_hubert = kmeans(pretrained=True, clusters=200, checkpoint=pretrained_path)
+discrete_units = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True).to(torch.device("cpu"))
+discrete_units.eval()
+
+hubert = HubertModel.from_pretrained("facebook/hubert-base-ls960")
+hubert.eval()
 
 def get_random_files(folder_path, x=10):
     """
@@ -126,6 +125,7 @@ def extract_content_emb_mean(files, encoder):
     """
     embeddings = []
     labels = []
+    h_units = []
     huberts = []
     
     for file in tqdm(files, desc="Processing Content Embeddings (Mean)"):
@@ -143,23 +143,27 @@ def extract_content_emb_mean(files, encoder):
             emb_audio = torch.tensor(audio).unsqueeze(0).unsqueeze(0).float()
             z = encoder(emb_audio)
 
-            output = model_hubert(emb_audio.squeeze(1))
-            output = output.hidden_states[6].squeeze(0)
-            output = output.squeeze().detach().cpu().numpy()
-            units = kmean_hubert.predict(output)
-            units = torch.tensor(units, dtype=torch.long)
+            units = discrete_units.units(emb_audio)
             units = units.detach().cpu()
+
+            with torch.no_grad():
+                outputs = hubert(emb_audio.squeeze(1), output_hidden_states=True)
+            
+            # Retrieve the 7th hidden state (index 6, as indexing starts at 0)
+            hidden_state_7 = outputs.hidden_states[6]  # Shape: (batch_size, sequence_length, hidden_dim)
+            hubert_mean = torch.mean(hidden_state_7, dim=2)
             
             # Get mean embedding across time dimension
-            emb = torch.mean(z, dim=2)
+            emb = torch.mean(z, dim=1)
             embeddings.append(emb.detach().cpu().numpy().flatten())
-            huberts.append(units.numpy().flatten())
+            h_units.append(units.numpy().flatten())
+            huberts.append(hubert_mean.numpy().flatten())
             labels.append(speaker_id)
             
         except Exception as e:
             print(f"Error processing content file {file}: {e}")
     
-    return np.array(embeddings), labels, np.array(huberts)
+    return np.array(embeddings), labels, np.array(h_units), np.array(huberts)
 
 def plot_tsne(embeddings, labels, ax, title):
     """
@@ -263,14 +267,15 @@ def main():
     # Extract all embeddings
     speaker_embeddings, speaker_labels = extract_speaker_emb(speaker_files, speaker_encoder, pqmf)
     content_frames, content_frame_labels = extract_content_emb_frames(existing_phrases, encoder)
-    content_mean, content_mean_labels, huberts = extract_content_emb_mean(all_files, encoder)
+    content_mean, content_mean_labels, units, huberts = extract_content_emb_mean(all_files, encoder)
     
     print(f"Speaker embeddings: {speaker_embeddings.shape}")
     print(f"Content frames: {content_frames.shape}")
     print(f"Content mean: {content_mean.shape}")
+    print(f"HuBERT: {units.shape, huberts.shape}")
     
     # Create subplot visualization - 3 plots side by side
-    fig, axes = plt.subplots(1, 4, figsize=(32, 8))
+    fig, axes = plt.subplots(1, 5, figsize=(32, 6))
     fig.suptitle(f'Voice Model Analysis: {model_name}', fontsize=16, fontweight='bold')
     
     # Plot three analyses side by side
@@ -284,7 +289,10 @@ def main():
               'Content Embeddings - Mean Level (All Files)')
 
     plot_tsne(huberts, content_mean_labels, axes[3], 
-              'HuBERT Embeddings (All Files)')
+              'HuBERT Embeddings - Mean 6th Layer (All Files)')
+
+    plot_tsne(units, content_mean_labels, axes[4], 
+              'HuBERT Embeddings - Discrete Units (All Files)')
     
     plt.tight_layout()
     
@@ -292,7 +300,7 @@ def main():
     os.makedirs('plots', exist_ok=True)
     plot_filename = f'plots/voice_analysis_{model_name}.png'
     plt.savefig(plot_filename, bbox_inches='tight', dpi=100)
-    print(f"Analysis plot saved as {plot_filename}")
+    print(f"Analysis plot saved: {plot_filename}")
     
     plt.show()
 
