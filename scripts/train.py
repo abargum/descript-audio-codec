@@ -185,7 +185,7 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.embedding_projection.parameters()) + list(generator.ce_projection_hubert.parameters()) + list(generator.timbre_embedding.parameters()) + [generator.latent_query] + list(generator.timbre_tokenizer.parameters()) + [generator.timbre_keys] + list(generator.timbre_encoder.parameters())
+        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection_hubert.parameters()) + list(generator.timbre_embedding.parameters()) + [generator.latent_query] + list(generator.timbre_tokenizer.parameters()) + [generator.timbre_keys] + list(generator.timbre_encoder.parameters())
         optimizer_g = AdamW(params_to_update, use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
         
@@ -272,7 +272,6 @@ def get_units(batch):
     
     unit_length = 102 #(t / sr * 16000) // 320
     target_units_hubert = torch.zeros(b, unit_length)
-    target_embedding = torch.zeros(b, unit_length, 768)
 
     for i, p in enumerate(batch["path"]):
         offset = batch["signal"].metadata["offset"][i]
@@ -281,14 +280,9 @@ def get_units(batch):
         unit_hubert = unit_dict[p]['hubert_units']
         
         unit_hubert = unit_hubert[start:start+unit_length].unsqueeze(0)
-        target_units_hubert[i, :] = unit_hubert
-
-        embedding_hubert = unit_dict[p]['outputs']
-        
-        embedding_hubert = torch.tensor(embedding_hubert[start:start+unit_length, :]).unsqueeze(0)
-        target_embedding[i, :, :] = embedding_hubert        
+        target_units_hubert[i, :] = unit_hubert   
     
-    return target_units_hubert, target_embedding
+    return target_units_hubert
 
 def l_info_nce(C, C_aug, tau=0.1):
     """
@@ -334,24 +328,21 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
             batch["signal"].clone(), **batch["transform_args"]
         )
 
-        target_units_hubert, target_embedding = get_units(batch)
+        target_units_hubert = get_units(batch)
 
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
-        
-        projected_z = F.interpolate(out["projected_z"], 102).transpose(2,1)
-        z_loss = l_info_nce(target_embedding.to(projected_z), projected_z)
 
         projected_z_hubert = out["projected_z_hubert"]
         unit_loss_hubert = torch.nn.functional.cross_entropy(projected_z_hubert, target_units_hubert.type(torch.int64).to(recons.device))
 
-        z_aug = out["z_aug"].transpose(2,1)
-        z_masked = out["z_masked"].transpose(2,1)
+        z_aug1 = out["z_aug1"].transpose(2,1)
+        z_aug2 = out["z_aug2"].transpose(2,1)
 
-        intra_loss = l_info_nce(z_aug, z_masked)
+        ctr_loss = l_info_nce(z_aug1, z_aug2)
 
-        z_loss = z_loss + unit_loss_hubert + intra_loss
+        z_loss = unit_loss_hubert + ctr_loss
 
     if state.warmed_up:
         with accel.autocast():
