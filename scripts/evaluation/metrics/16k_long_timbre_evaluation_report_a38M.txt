@@ -1,0 +1,86 @@
+=== VOICE MODEL EVALUATION REPORT: 16k_long_timbre ===
+Evaluation date: 2025-06-18 13:42:44
+Model path: pretrained/16k_long_timbre
+Data path: libri-dev-set
+Target speakers: p227, p228
+Device used: cuda
+Random seed: 42
+
+=== VOICE SIMILARITY METRICS ===
+
+Speaker: p227
+Average similarity score: 0.7391
+
+Top 3 most similar files:
+1. 1272_128104_000003_000002.wav: 0.8216
+2. 3000_15664_000007_000002.wav: 0.8124
+3. 3000_15664_000002_000000.wav: 0.8060
+
+Bottom 3 least similar files:
+1. 5338_284437_000005_000001.wav: 0.6368
+2. 5338_284437_000002_000000.wav: 0.6310
+3. 5338_284437_000008_000000.wav: 0.5788
+
+Speaker: p228
+Average similarity score: 0.7791
+
+Top 3 most similar files:
+1. 84_121550_000032_000000.wav: 0.8368
+2. 3000_15664_000002_000005.wav: 0.8353
+3. 84_121550_000036_000000.wav: 0.8231
+
+Bottom 3 least similar files:
+1. 1272_128104_000001_000000.wav: 0.7226
+2. 1272_128104_000003_000001.wav: 0.7039
+3. 5338_284437_000008_000000.wav: 0.6195
+
+
+=== DNSMOS METRICS ===
+
+Speaker: p227
+BAK (background quality): 3.4047
+SIG (signal quality): 3.5267
+OVRL (overall quality): 4.0137
+
+Speaker: p228
+BAK (background quality): 3.3124
+SIG (signal quality): 3.5882
+OVRL (overall quality): 3.9490
+
+
+=== WORD ERROR RATE (WER) AND CHARACTER ERROR RATE (CER) METRICS ===
+
+Speaker: p227
+Mean WER: 0.0940
+Mean CER: 0.0605
+Corpus WER: 0.0374
+Corpus CER: 0.0197
+Min WER: 0.0000
+Max WER: 1.0000
+Min CER: 0.0000
+Max CER: 1.0000
+Files evaluated: 36
+
+Speaker: p228
+Mean WER: 0.0559
+Mean CER: 0.0317
+Corpus WER: 0.0302
+Corpus CER: 0.0192
+Min WER: 0.0000
+Max WER: 0.7500
+Min CER: 0.0000
+Max CER: 0.4444
+Files evaluated: 36
+
+
+=== OVERALL METRICS SUMMARY ===
+Overall Average Voice Similarity: 0.7591
+Overall Average DNSMOS BAK: 3.3585
+Overall Average DNSMOS SIG: 3.5574
+Overall Average DNSMOS OVRL: 3.9814
+Overall Average WER: 0.0750
+Overall Average CER: 0.0461
+Overall Corpus WER: 0.0338
+Overall Corpus CER: 0.0195
+
+=== END OF EVALUATION REPORT ===
