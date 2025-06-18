@@ -151,10 +151,10 @@ def extract_content_emb_mean(files, encoder):
             
             # Retrieve the 7th hidden state (index 6, as indexing starts at 0)
             hidden_state_7 = outputs.hidden_states[6]  # Shape: (batch_size, sequence_length, hidden_dim)
-            hubert_mean = torch.mean(hidden_state_7, dim=2)
+            hubert_mean = torch.mean(hidden_state_7, dim=1)
             
             # Get mean embedding across time dimension
-            emb = torch.mean(z, dim=1)
+            emb = torch.mean(z, dim=2)
             embeddings.append(emb.detach().cpu().numpy().flatten())
             h_units.append(units.numpy().flatten())
             huberts.append(hubert_mean.numpy().flatten())
