@@ -30,6 +30,7 @@ from torchaudio.functional import resample
 import pickle
 import torch.nn.functional as F
 from utils.custom_dataset import CustomAudioDataset
+from utils.mask import timemask_random_units
 
 ml.BaseModel.INTERN += ["modules.discriminator"]
 ml.BaseModel.EXTERN += ["einops"]
@@ -185,7 +186,8 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection_hubert.parameters())
+        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection_hubert.parameters()) + list(generator.timbre_embedding.parameters()) + list(generator.timbre_encoder.parameters())
+        
         optimizer_g = AdamW(params_to_update, use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)
         
@@ -243,7 +245,7 @@ def val_loop(batch, state, accel):
         batch["signal"].clone(), **batch["transform_args"]
     )
 
-    out = state.generator(signal.audio_data, signal.sample_rate)
+    out = state.generator(signal.audio_data, signal.audio_data, signal.sample_rate)
     recons = AudioSignal(out["audio"], signal.sample_rate)
 
     return {
@@ -284,15 +286,14 @@ def get_units(batch):
     
     return target_units_hubert
 
+"""
 def l_info_nce(C, C_aug, tau=0.1):
-    """
     Computes infoNCE loss between clean and augmented embeddings
     using F.cross_entropy.
 
     C:      [B, T, D] tensor (clean embeddings)
     C_aug:  [B, T, D] tensor (augmented embeddings)
     tau:    temperature parameter
-    """
     
     B, T, D = C.shape
 
@@ -314,6 +315,40 @@ def l_info_nce(C, C_aug, tau=0.1):
     loss = F.cross_entropy(logits, targets)
 
     return loss
+"""
+
+def l_info_nce(hidden1, hidden2, temperature=0.1, normalize=True):
+    """
+    Alternative: Use temporal slices as negatives within the same sequence.
+
+    Args:
+        hidden1: First representation [B, C, T]
+        hidden2: Second representation [B, C, T]
+        temperature: Temperature scaling parameter
+        normalize: Whether to L2 normalize the representations
+    """
+    B, C, T = hidden1.shape
+
+    # Reshape to treat each temporal slice as a separate sample
+    h1 = hidden1.permute(0, 2, 1).reshape(B * T, C)  # [B*T, C]
+    h2 = hidden2.permute(0, 2, 1).reshape(B * T, C)  # [B*T, C]
+
+    if normalize:
+        h1 = F.normalize(h1, dim=-1)
+        h2 = F.normalize(h2, dim=-1)
+
+    # Compute similarities
+    sim_12 = torch.matmul(h1, h2.T) / temperature  # [B*T, B*T]
+    sim_21 = torch.matmul(h2, h1.T) / temperature  # [B*T, B*T]
+
+    # Create labels - positive pairs are at the same temporal and batch indices
+    labels = torch.arange(B * T, device=hidden1.device)
+
+    # Compute InfoNCE loss
+    loss_1 = F.cross_entropy(sim_12, labels)
+    loss_2 = F.cross_entropy(sim_21, labels)
+
+    return (loss_1 + loss_2) / 2
 
 
 @timer()
@@ -329,18 +364,19 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         )
 
         target_units_hubert = get_units(batch)
+        masked_audio, _, _ = timemask_random_units(signal.audio_data, target_units_hubert, percent=0.2)
 
     with accel.autocast():
-        out = state.generator(signal.audio_data, signal.sample_rate)
+        out = state.generator(signal.audio_data, masked_audio, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
 
         projected_z_hubert = out["projected_z_hubert"]
         unit_loss_hubert = torch.nn.functional.cross_entropy(projected_z_hubert, target_units_hubert.type(torch.int64).to(recons.device))
 
-        z_aug1 = out["z_aug1"].transpose(2,1)
-        z_aug2 = out["z_aug2"].transpose(2,1)
+        z_aug1 = out["z_aug1"]
+        z_aug2 = out["z_aug2"]
 
-        ctr_loss = l_info_nce(z_aug1, z_aug2) * 2.0
+        ctr_loss = l_info_nce(z_aug1, z_aug2)
 
         z_loss = unit_loss_hubert + ctr_loss
 
@@ -424,32 +460,6 @@ def checkpoint(state, save_iters, save_path):
             f"{save_path}/{tag}", discriminator_extra
         )
 
-
-@torch.no_grad()
-def save_samples(state, val_idx, writer):
-    state.tracker.print("Saving audio samples to TensorBoard")
-    state.generator.eval()
-
-    samples = [state.val_data[idx] for idx in val_idx]
-    batch = state.val_data.collate(samples)
-    batch = util.prepare_batch(batch, accel.device)
-    signal = state.train_data.transform(
-        batch["signal"].clone(), **batch["transform_args"]
-    )
-
-    out = state.generator(signal.audio_data, signal.sample_rate)
-    recons = AudioSignal(out["audio"], signal.sample_rate)
-
-    audio_dict = {"recons": recons}
-    if state.tracker.step == 0:
-        audio_dict["signal"] = signal
-
-    for k, v in audio_dict.items():
-        for nb in range(v.batch_size):
-            v[nb].cpu().write_audio_to_tb(
-                f"{k}/sample_{nb}.wav", writer, state.tracker.step
-            )
-
 def validate(state, val_dataloader, accel):
     for batch in val_dataloader:
         output = val_loop(batch, state, accel)
@@ -529,7 +539,7 @@ def train(
 
     # Wrap the functions so that they neatly track in TensorBoard + progress bars
     # and only run when specific conditions are met.
-    global train_loop, val_loop, validate, save_samples, checkpoint
+    global train_loop, val_loop, validate, checkpoint
     train_loop = tracker.log("train", "value", history=False)(
         tracker.track("train", num_iters, completed=state.tracker.step)(train_loop)
     )
@@ -538,7 +548,6 @@ def train(
 
     # These functions run only on the 0-rank process
     
-    save_samples = when(lambda: accel.local_rank == 0)(save_samples)
     checkpoint = when(lambda: accel.local_rank == 0)(checkpoint)
 
     with tracker.live:
@@ -548,8 +557,6 @@ def train(
             last_iter = (
                 tracker.step == num_iters - 1 if num_iters is not None else False
             )
-            if tracker.step % sample_freq == 0 or last_iter:
-                save_samples(state, val_idx, writer)
 
             if tracker.step % valid_freq == 0 or last_iter:
                 validate(state, val_dataloader, accel)
