@@ -313,5 +313,3 @@ class SpeakerEncoder(nn.Module):
         x = self.fc6(x)
 
         return x 
-
-        return z_for_CE

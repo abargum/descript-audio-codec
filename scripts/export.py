@@ -210,7 +210,7 @@ def main():
 
     # ------ FOR TEST ------
     x, sr = librosa.load("audio/male.wav", sr=16000, mono=True)
-    x = torch.tensor(x[:32768]).unsqueeze(0).unsqueeze(0)
+    x = torch.tensor(x[:2*32768]).unsqueeze(0).unsqueeze(0)
     chunk_size = 2048
     num_chunks = (x.shape[-1] + chunk_size - 1) // chunk_size
 
