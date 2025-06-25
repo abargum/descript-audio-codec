@@ -376,7 +376,7 @@ def train_loop(state, batch, accel, lambdas, update_disc_every, warmup):
         z_aug1 = out["z_aug1"]
         z_aug2 = out["z_aug2"]
 
-        ctr_loss = l_info_nce(z_aug1, z_aug2)
+        ctr_loss = l_info_nce(z_aug1, z_aug2) * 0.5
 
         z_loss = unit_loss_hubert + ctr_loss
 
