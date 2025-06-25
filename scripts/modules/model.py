@@ -285,7 +285,7 @@ class VoiceModel(BaseModel):
         source_pitch = source_pitch * 1.0
         source_pitch[torch.isnan(source_pitch)] = 0
 
-        time_timbre_embedding = self.timbre_encoder(audio_data)
+        time_timbre_embedding = self.timbre_encoder(target)
         timbre_queries = torch.cat((z, emb.to(z), source_pitch.unsqueeze(1), periodicity.unsqueeze(1), loudness.unsqueeze(1)), dim=1)
         varying_speaker_emb = self.timbre_embedding(time_timbre_embedding, time_timbre_embedding, timbre_queries)
 
@@ -344,3 +344,47 @@ class VoiceModel(BaseModel):
         y = y_multiband
         
         return y
+
+    def get_varying_emb(self, audio_data: torch.Tensor, target: torch.Tensor):
+
+        length = audio_data.shape[-1]
+
+        target_resampled = resample(target, self.sample_rate, 44100)
+        zeros = torch.zeros(target.shape[0], 1, 40755).to(audio_data)
+        target_resampled = torch.cat((target_resampled, zeros), dim=-1)
+        target_multiband = self.pqmf(target_resampled)
+
+        pitch_logits = self.pitch_encoder(audio_data)
+        periodicity = entropy(pitch_logits)
+
+        f0_in = torch.argmax(pitch_logits, dim=1)
+        f0_in = bins_to_frequency(f0_in)
+        pitch_logits = self.pitch_encoder(target)
+        f0_target = torch.argmax(pitch_logits, dim=1)
+        f0_target = bins_to_frequency(f0_target)
+
+        loudness = extract_loudness(audio_data, sr=self.sample_rate, block_size=256)
+        loudness = (10 ** (loudness / 20))
+        
+        in_med, in_std = extract_f0_mean_std(f0_in)
+        tar_med, tar_std = extract_f0_mean_std(f0_target)
+                
+        z = self.encoder(audio_data)
+
+        with torch.no_grad():
+            emb = self.speaker_encoder(target_multiband).unsqueeze(2)
+            emb = emb.repeat(1, 1, z.shape[-1])
+
+        f0_in[f0_in == 0] = float('nan')
+        
+        standardized_source_pitch = (f0_in - in_med.to(f0_in)) / in_std.to(f0_in)
+        source_pitch = (standardized_source_pitch * tar_std) + tar_med
+        source_pitch = source_pitch * 1.0
+        source_pitch[torch.isnan(source_pitch)] = 0
+
+        time_timbre_embedding = self.timbre_encoder(target)
+        timbre_queries = torch.cat((z, emb.to(z), source_pitch.unsqueeze(1), periodicity.unsqueeze(1), loudness.unsqueeze(1)), dim=1)
+        varying_speaker_emb = self.timbre_embedding(time_timbre_embedding, time_timbre_embedding, timbre_queries)
+        
+        return varying_speaker_emb
+        

@@ -118,6 +118,50 @@ def extract_content_emb_frames(files, encoder):
     
     return np.array(embeddings), labels
 
+def extract_time_varying(files, model):
+    """
+    Extract mean content embeddings from audio files using 16kHz processing.
+    This averages across time for utterance-level representation.
+    Switches target halfway through processing.
+    """
+    embeddings = []
+    labels = []
+    target, _ = librosa.load("vctk-small/p228/p228_004.wav", sr=16000)
+    target = torch.tensor(target[:32768]).unsqueeze(0).unsqueeze(0).float()
+    target2, _ = librosa.load("vctk-small/p226/p226_004.wav", sr=16000)
+    target2 = torch.tensor(target2[:32768]).unsqueeze(0).unsqueeze(0).float()
+    
+    total_files = len(files)
+    midpoint = total_files // 2
+    
+    for i, file in enumerate(tqdm(files, desc="Processing Content Embeddings (Mean)")):
+        speaker_id = file.split('/')[-2]
+        
+        # Switch target at midpoint
+        current_target = target if i < midpoint else target2
+        
+        try:
+            audio, sr = librosa.load(file, sr=16000)
+            
+            # Pad or truncate to 32768 samples
+            if len(audio) < 32768:
+                audio = np.pad(audio, (0, 32768 - len(audio)))
+            else:
+                audio = audio[:32768]
+            
+            emb_audio = torch.tensor(audio).unsqueeze(0).unsqueeze(0).float()
+            z = model.get_varying_emb(emb_audio, current_target)
+            
+            # Get mean embedding across time dimension
+            emb = torch.mean(z, dim=2)
+            embeddings.append(emb.detach().cpu().numpy().flatten())
+            labels.append(speaker_id)
+            
+        except Exception as e:
+            print(f"Error processing content file {file}: {e}")
+    
+    return np.array(embeddings), labels
+
 def extract_content_emb_mean(files, encoder):
     """
     Extract mean content embeddings from audio files using 16kHz processing.
@@ -164,6 +208,7 @@ def extract_content_emb_mean(files, encoder):
             print(f"Error processing content file {file}: {e}")
     
     return np.array(embeddings), labels, np.array(h_units), np.array(huberts)
+    
 
 def plot_tsne(embeddings, labels, ax, title):
     """
@@ -268,6 +313,7 @@ def main():
     speaker_embeddings, speaker_labels = extract_speaker_emb(speaker_files, speaker_encoder, pqmf)
     content_frames, content_frame_labels = extract_content_emb_frames(existing_phrases, encoder)
     content_mean, content_mean_labels, units, huberts = extract_content_emb_mean(all_files, encoder)
+    time_mean, time_labels = extract_time_varying(all_files, generator)
     
     print(f"Speaker embeddings: {speaker_embeddings.shape}")
     print(f"Content frames: {content_frames.shape}")
@@ -275,7 +321,7 @@ def main():
     print(f"HuBERT: {units.shape, huberts.shape}")
     
     # Create subplot visualization - 3 plots side by side
-    fig, axes = plt.subplots(1, 5, figsize=(32, 6))
+    fig, axes = plt.subplots(1, 6, figsize=(32, 6))
     fig.suptitle(f'Voice Model Analysis: {model_name}', fontsize=16, fontweight='bold')
     
     # Plot three analyses side by side
@@ -293,6 +339,9 @@ def main():
 
     plot_tsne(units, content_mean_labels, axes[4], 
               'HuBERT Embeddings - Discrete Units (All Files)')
+
+    plot_tsne(time_mean, time_labels, axes[5], 
+              'Timbre Embeddings - Time Varying (All Files)')
     
     plt.tight_layout()
     
