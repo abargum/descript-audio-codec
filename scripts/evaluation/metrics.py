@@ -55,7 +55,7 @@ def main():
     args = parser.parse_args()
     
     # Set random seed
-    #set_seed(args.seed)
+    set_seed(args.seed)
     
     # Load model
     print("Loading voice model...")
