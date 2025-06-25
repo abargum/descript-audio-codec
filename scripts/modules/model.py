@@ -60,19 +60,10 @@ class VoiceModel(BaseModel):
                                dilations = dilations
         )
 
-        self.timbre_encoder = Encoder(data_size = 1,
-                                      capacity = 32,
-                                      ratios = ratios,
-                                      latent_size = latent_size_content_encoder,
-                                      n_out = 1,
-                                      kernel_size = kernel_size,
-                                      dilations = dilations
-        )
-
         self.decoder = Generator(data_size = 1,
                                  capacity = capacity_decoder,
                                  ratios = ratios,
-                                 latent_size = latent_size_content_encoder + 256 + 32,
+                                 latent_size = latent_size_content_encoder + 256,
                                  kernel_size = kernel_size,
                                  sampling_rate = sampling_rate,
                                  dilations = dilations
@@ -97,12 +88,42 @@ class VoiceModel(BaseModel):
         
         self.ce_projection_hubert = CrossEntropyProjectionHuBERT(channels=latent_size_content_encoder + 256)
 
-        self.timbre_embedding = CausalMultiheadAttention(keys=64,
-                                                          values=64,
-                                                          queries=323,
-                                                          out_channels=32,
-                                                          hiddens=768,
-                                                          heads=8)
+        self.timbre_encoder = Encoder(data_size = 1,
+                                      capacity = 16,
+                                      ratios = ratios,
+                                      latent_size = latent_size_content_encoder,
+                                      n_out = 1,
+                                      kernel_size = kernel_size,
+                                      dilations = dilations
+        )
+
+        self.timber_query = nn.Parameter(torch.randn(1, 512, 50))
+
+        self.pre_mha = CausalMultiheadAttention(keys=64,
+                                                values=64,
+                                                queries=512,
+                                                out_channels=512,
+                                                hiddens=512,
+                                                heads=8)
+
+        self.post_mha = CausalMultiheadAttention(keys=64,
+                                                values=64,
+                                                queries=512,
+                                                out_channels=128,
+                                                hiddens=512,
+                                                heads=8)
+
+        self.timber_key = nn.Parameter(torch.randn(1, 128, 50))
+
+        self.sampler = CausalMultiheadAttention(keys=128,
+                                                values=128,
+                                                queries=323,
+                                                out_channels=64,
+                                                hiddens=512,
+                                                heads=8)
+        
+        self.proj = nn.Conv1d(64, 256, 1)
+        self.slerp = 0.5
 
         add_noise = AddNoise(min_snr_in_db=5.0, max_snr_in_db=20.0, sample_rate=self.sample_rate)
         shift_pitch = PitchAug(sample_rate=self.sample_rate)
@@ -150,6 +171,25 @@ class VoiceModel(BaseModel):
         
         return z_aug1, z_aug2 
 
+    def get_timbre_values(self, audio_data: torch.Tensor, content_query: torch.Tensor, emb: torch.Tensor, eps: float = 1e-5):
+        bsize, _, _ = audio_data.shape
+
+        timbre_emb = self.timbre_encoder(audio_data)
+        
+        query = self.timber_query.repeat(bsize, 1, 1)
+        query = self.pre_mha.forward(timbre_emb, timbre_emb, query) + query
+        local = self.post_mha.forward(timbre_emb, timbre_emb, query)
+
+        key = self.timber_key.repeat(bsize, 1, 1)
+        sampled = self.sampler(key, local, content_query)
+        sampled = F.normalize(self.proj(sampled), p=2, dim=1)
+
+        theta = torch.matmul(emb[:, None], sampled).clamp(-1 +  eps, 1 - eps).acos()
+        
+        return (
+            torch.sin(self.slerp * theta) * sampled
+            + torch.sin((1 - self.slerp) * theta) * emb[..., None]) / theta.sin()
+
     def forward(self,
                 audio_data: torch.Tensor,
                 masked_audio_data: torch.Tensor,
@@ -157,8 +197,8 @@ class VoiceModel(BaseModel):
         
         length = audio_data.shape[-1]
 
-        audio_resampled = resample(masked_audio_data, self.sample_rate, 44100)
-        zeros = torch.zeros(masked_audio_data.shape[0], 1, 40755).to(audio_data)
+        audio_resampled = resample(audio_data, self.sample_rate, 44100)
+        zeros = torch.zeros(audio_data.shape[0], 1, 40755).to(audio_data)
         audio_resampled = torch.cat((audio_resampled, zeros), dim=-1)
         audio_multiband = self.pqmf(audio_resampled)
 
@@ -174,19 +214,24 @@ class VoiceModel(BaseModel):
         # -------- mask ---------
         z_aug1, z_aug2 = self.augment_and_encode(audio_data)
        
-        emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z_aug1.shape[-1])
+        emb = self.speaker_encoder(audio_multiband)
+        emb_repeated = emb.unsqueeze(2).repeat(1, 1, z_aug1.shape[-1])
 
-        projected_z_hubert = self.ce_projection_hubert(torch.cat((z_aug1, emb), dim=1))
+        projected_z_hubert = self.ce_projection_hubert(torch.cat((z_aug1, emb_repeated), dim=1))
 
         z_aug1 = z_aug1.detach()
         z_aug2 = z_aug2.detach()
 
-        time_timbre_embedding = self.timbre_encoder(masked_audio_data)
-        timbre_queries = torch.cat((z_aug1, emb, f0.unsqueeze(1), periodicity.unsqueeze(1), loudness.unsqueeze(1)), dim=1)
-        varying_speaker_emb = self.timbre_embedding(time_timbre_embedding, time_timbre_embedding, timbre_queries)
+        content_queries = torch.cat((z_aug1,
+                                     emb_repeated,
+                                     f0.unsqueeze(1),
+                                     periodicity.unsqueeze(1), 
+                                     loudness.unsqueeze(1)),
+                                     dim=1)
+        
+        varying_speaker_emb = self.get_timbre_values(masked_audio_data, content_queries, emb)
 
-        z_cat = torch.cat((z_aug1, emb, varying_speaker_emb), dim=1)
+        z_cat = torch.cat((z_aug1, varying_speaker_emb), dim=1)
 
         y_multiband, nsf_source = self.decoder(z_cat,
                                                f0.unsqueeze(1),
@@ -223,14 +268,19 @@ class VoiceModel(BaseModel):
         
         z = self.encoder(audio_data)
        
-        emb = self.speaker_encoder(audio_multiband).unsqueeze(2)
-        emb = emb.repeat(1, 1, z.shape[-1])
+        emb = self.speaker_encoder(audio_multiband)
+        emb_repeated = emb.unsqueeze(2).repeat(1, 1, z.shape[-1])
 
-        time_timbre_embedding = self.timbre_encoder(audio_data)
-        timbre_queries = torch.cat((z, emb, f0.unsqueeze(1), periodicity.unsqueeze(1), loudness.unsqueeze(1)), dim=1)
-        varying_speaker_emb = self.timbre_embedding(time_timbre_embedding, time_timbre_embedding, timbre_queries)
-
-        z_cat = torch.cat((z, emb, varying_speaker_emb), dim=1)
+        content_queries = torch.cat((z,
+                                     emb_repeated,
+                                     f0.unsqueeze(1),
+                                     periodicity.unsqueeze(1),
+                                     loudness.unsqueeze(1)),
+                                     dim=1)
+        
+        varying_speaker_emb = self.get_timbre_values(audio_data, content_queries, emb)
+        
+        z_cat = torch.cat((z, varying_speaker_emb), dim=1)
         
         y_multiband, nsf_source = self.decoder(z_cat,
                                                f0.unsqueeze(1),

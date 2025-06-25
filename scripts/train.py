@@ -186,7 +186,7 @@ def load(
     discriminator = accel.prepare_model(discriminator)
 
     with argbind.scope(args, "generator"):
-        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection_hubert.parameters()) + list(generator.timbre_embedding.parameters()) + list(generator.timbre_encoder.parameters())
+        params_to_update = list(generator.encoder.parameters()) + list(generator.decoder.parameters()) + list(generator.ce_projection_hubert.parameters()) + list(generator.timbre_encoder.parameters()) + [generator.timber_query] + [generator.timber_key] + list(generator.pre_mha.parameters()) + list(generator.post_mha.parameters()) + list(generator.sampler.parameters()) + list(generator.proj.parameters())
         
         optimizer_g = AdamW(params_to_update, use_zero=accel.use_ddp)
         scheduler_g = ExponentialLR(optimizer_g)

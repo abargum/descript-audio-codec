@@ -6,22 +6,14 @@ import torch
 import torch.nn as nn
 from create_kmeans import kmeans
 from torchaudio.functional import resample
-from transformers import Wav2Vec2FeatureExtractor, AutoModel, HubertConfig
+from transformers import AutoProcessor, WavLMModel
 
-# Load multi-speaker HuBERT model
-pretrained_path = "scripts/utils/kmeans_200_multi.pt"
-config = HubertConfig.from_pretrained("utter-project/mHuBERT-147", output_hidden_states=True)
-feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained("utter-project/mHuBERT-147")
-model_hubert = AutoModel.from_pretrained("utter-project/mHuBERT-147", config=config).to(torch.device("cuda"))
-model_hubert.eval()
-kmean_hubert = kmeans(pretrained=True, clusters=200, checkpoint=pretrained_path)
+# Load HuBERT model
+discrete_units = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True).to(torch.device("cuda"))
+discrete_units.eval()
 
 def get_hubert_units(audio):
-    output = model_hubert(audio)
-    output = output.hidden_states[6].squeeze(0)
-    output = output.squeeze().detach().cpu().numpy()
-    units = kmean_hubert.predict(output)
-    units = torch.tensor(units, dtype=torch.long)
+    units = discrete_units.units(audio.unsqueeze(0))
     return units.detach().cpu()
 
 def get_features(file_path, sr):
@@ -30,13 +22,14 @@ def get_features(file_path, sr):
     x = torch.tensor(x).unsqueeze(0).to(torch.device('cuda'))
 
     #zero-pad end if x is smaller than input to network
-    if x.shape[-1] < 32768:
-        zeros = torch.zeros(1, 32768 - x.shape[-1]).to(torch.device('cuda'))
+    if x.shape[-1] < 65536:
+        zeros = torch.zeros(1, 65536 - x.shape[-1]).to(torch.device('cuda'))
         x = torch.cat((x, zeros), dim=-1)
 
     #zero pad end with one second to ensure that the offset does not go out of range
     zeros = torch.zeros(1, sr).to(torch.device('cuda'))
     x = torch.cat((x, zeros), dim=-1)
+
     hubert_units = get_hubert_units(x)
         
     return hubert_units
@@ -70,7 +63,7 @@ def process_audio_directory(base_dirs, output_path, sample_rate):
                         hubert_units = get_features(file_path, sample_rate)
                         
                         audio_data[file_path] = {
-                            'hubert_units': hubert_units
+                            'hubert_units': hubert_units,
                         }   
                         
                     except Exception as e:
@@ -86,6 +79,7 @@ def process_audio_directory(base_dirs, output_path, sample_rate):
 # Example usage
 base_directories = [
     "VCTK-Corpus/wav48",
+    "LibriTTS/train-clean-360",
     "validation-set",
 ]
 sample_rate = 16000
