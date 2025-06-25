@@ -104,19 +104,26 @@ def process_single_audio_file(audio_path, target, embeddings, means, stds,
             return
         
         y_adj = adjust_audio_length(y, sr, min_power=min_power, mode=mode)
-        
 
         output_audio_path = output_audio_path.replace(".flac", ".wav")
         wavfile.write(output_audio_path, 16000, y_adj)
         
         # Process with model
         audio_tensor = torch.tensor(y_adj).unsqueeze(0).unsqueeze(0).to(device)
+
+        #load target
+        """
+        target_path = "vctk-small/" + target + "/" + target + "_004.wav"
+        target, sr = librosa.load(target_path, sr=16000)
+        target = librosa.util.normalize(y, axis=-1)
+        target_tensor = torch.tensor(target[:32768]).unsqueeze(0).unsqueeze(0).to(device)
+        """
         
         with torch.no_grad():
             processed = generator.evaluate(audio_tensor, embeddings, means, stds)
+            #processed = generator.predict(audio_tensor, target_tensor)
 
         # Save processed 44.1 kHz version
-        
         processed_np = processed.squeeze().cpu().numpy()
         processed_np_44k = librosa.resample(processed_np.astype(np.float32), orig_sr=16000, target_sr=44100)
         

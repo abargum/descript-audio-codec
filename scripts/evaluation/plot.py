@@ -227,7 +227,7 @@ def main():
     # Test the model
     x = torch.zeros(1, 1, 2**15).to(torch.device('cpu'))
     try:
-        y = generator(x)
+        y = generator(x, x)
         print("Model test successful. Output shape:", y['audio'].shape)
     except Exception as e:
         print(f"Model test failed: {e}")
